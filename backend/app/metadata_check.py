@@ -92,10 +92,10 @@ def check_metadata(pdf_path: str) -> list[dict]:
                 if parts < _MIN_PDF_VERSION:
                     issues.append({
                         "field": "PDF version",
-                        "severity": "error",
+                        "severity": "info",
                         "description": (
-                            f"PDF version {ver_str} predates accessibility features. "
-                            "PDF/UA-1 requires PDF 1.4 or later. Re-export or update the PDF version."
+                            f"PDF version {ver_str} predates PDF/UA-1 (requires 1.4+). "
+                            "Version has been automatically updated to 1.4 in the remediated output."
                         ),
                     })
             except Exception:

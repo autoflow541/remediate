@@ -12,16 +12,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 import time
-
 import json
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from .log_config import configure as _configure_logging
+_configure_logging()
 log = logging.getLogger(__name__)
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -66,8 +63,40 @@ app.add_middleware(
     ],
 )
 
+# ---------------------------------------------------------------------------
+# Request logging middleware
+# ---------------------------------------------------------------------------
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    """Log every request: method, path, status, and wall-clock time."""
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - t0) * 1000
+    log.info(
+        "%s %s -> %d  (%.0f ms)",
+        request.method, request.url.path,
+        response.status_code, ms,
+    )
+    return response
+
+
 # Reject absurdly large uploads early (bytes). 100 MB default.
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(100 * 1024 * 1024)))
+
+# Maximum files accepted by /batch in a single request.
+MAX_BATCH_FILES = int(os.environ.get("MAX_BATCH_FILES", "20"))
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitize a user-supplied filename for use in a Content-Disposition header.
+
+    Strips characters that could break the quoted-string parameter value
+    (double-quote, backslash, CR, LF) and truncates to 200 chars to prevent
+    oversized headers.
+    """
+    name = re.sub(r'[\r\n"\\]', '_', name)
+    return name[:200]
 
 
 def _save_upload(upload: UploadFile) -> str:
@@ -206,8 +235,6 @@ def remediate(
         report = remediate_pdf(in_path, manifest_obj, out_path)
 
         # Step 1: strip decorative colored background fills before contrast check.
-        # This whitens large colored rectangles (branded headers, section bands)
-        # that cause contrast failures the text-color fixer can't see.
         try:
             from .clean_background import clean_background_fills
             fd3, bg_path = tempfile.mkstemp(suffix=".pdf")
@@ -237,8 +264,7 @@ def remediate(
         except Exception:
             pass  # Never block remediation due to contrast fix failure
 
-        # Step 3: form field remediation (WCAG 4.1.2) — runs BEFORE validate_pdf
-        # so veraPDF sees the /TU keys and passes clause 7.18.1.
+        # Step 3: form field remediation (WCAG 4.1.2)
         form_total = 0
         form_fixed = 0
         form_fields: list = []
@@ -250,7 +276,7 @@ def remediate(
 
         result = validate_pdf(out_path, flavour=flavour)
 
-        # Step 4: verify contrast on final PDF — should be 0 if fix worked
+        # Step 4: verify contrast on final PDF
         contrast_failures: list = []
         try:
             from .contrast import check_contrast
@@ -258,7 +284,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 5: link quality check (WCAG 2.4.4) + auto-fix via /Alt
+        # Step 5: link quality check (WCAG 2.4.4)
         link_quality_issues: list = []
         link_quality_auto_fixed: list = []
         try:
@@ -308,7 +334,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 10: WCAG 2.5.3 Label in Name — form field visible label vs /TU
+        # Step 10: WCAG 2.5.3 Label in Name
         label_name_issues: list = []
         try:
             from .label_name_check import check_label_in_name
@@ -316,7 +342,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 11: WCAG 1.4.11 — Non-text contrast (Sprint 8)
+        # Step 11: WCAG 1.4.11 Non-text contrast
         nontext_contrast_issues: list = []
         try:
             from .nontext_contrast import check_nontext_contrast
@@ -324,7 +350,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 12: WCAG 2.5.8 — Target size (Sprint 8)
+        # Step 12: WCAG 2.5.8 Target size
         target_size_issues: list = []
         try:
             from .target_size import check_target_size
@@ -332,7 +358,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 13: XFA form detection (Sprint 8)
+        # Step 13: XFA form detection
         xfa_warning: dict | None = None
         try:
             from .xfa_detect import detect_xfa
@@ -340,7 +366,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 14: Font embedding + ToUnicode (Sprint 8)
+        # Step 14: Font embedding + ToUnicode
         font_issues: list = []
         try:
             from .font_check import check_fonts
@@ -348,7 +374,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 15: Reflow + text spacing (Sprint 9)
+        # Step 15: Reflow + text spacing
         reflow_issues: list = []
         try:
             from .reflow_check import check_reflow
@@ -356,7 +382,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 16: Metadata completeness (Sprint 9)
+        # Step 16: Metadata completeness
         metadata_issues: list = []
         try:
             from .metadata_check import check_metadata
@@ -364,7 +390,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 17: Watermark / background detection (Sprint 11)
+        # Step 17: Watermark / background detection
         watermark_candidates: list = []
         try:
             from .watermark_detect import detect_watermarks
@@ -372,7 +398,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 18: Abbreviation detection (Sprint 11)
+        # Step 18: Abbreviation detection
         abbrev_list: list = []
         try:
             from .abbrev_detect import detect_abbreviations
@@ -380,7 +406,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 19: Reading level (Sprint 11)
+        # Step 19: Reading level
         reading_level: dict = {}
         try:
             from .reading_level import assess_reading_level
@@ -388,7 +414,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 20: Structure completeness check (Sprint 17)
+        # Step 20: Structure completeness check
         struct_completeness: dict = {}
         try:
             from .struct_complete import check_struct_completeness
@@ -396,7 +422,21 @@ def remediate(
         except Exception:
             pass
 
-        # Step 21: veraPDF targeted auto-repair (Sprint 18)
+        # Step 20b: Round-trip check — verify output PDF matches manifest intent
+        round_trip: dict = {}
+        try:
+            from .round_trip_check import run as round_trip_run
+            round_trip = round_trip_run(out_path, manifest_obj)
+            if round_trip.get("failed", 0) > 0:
+                log.warning(
+                    "REMEDIATE round-trip: %d failure(s): %s",
+                    round_trip["failed"],
+                    [f["check"] for f in round_trip.get("failures", [])],
+                )
+        except Exception as _rt_exc:
+            log.debug("round_trip_check skipped: %s", _rt_exc)
+
+        # Step 21: veraPDF targeted auto-repair + re-validate
         verapdf_repairs: int = 0
         verapdf_repair_notes: list = []
         if not result.compliant and result.failures:
@@ -406,10 +446,21 @@ def remediate(
                     out_path,
                     [f.__dict__ if hasattr(f, "__dict__") else f for f in result.failures],
                 )
+                # Re-run veraPDF so result.compliant reflects the post-repair state.
+                # Without this, a PDF that passes after repair still shows as non-compliant.
+                if verapdf_repairs > 0:
+                    try:
+                        result = validate_pdf(out_path, flavour=flavour)
+                        log.info(
+                            "REMEDIATE re-validated after %d repair(s): compliant=%s",
+                            verapdf_repairs, result.compliant,
+                        )
+                    except Exception as _rev_exc:
+                        log.warning("REMEDIATE re-validation failed: %s", _rev_exc)
             except Exception:
                 pass
 
-        # Step 22: Contrast auto-fix — patch low-contrast text colours (Sprint 22)
+        # Step 22: Contrast auto-fix
         contrast_repairs: int = 0
         contrast_repair_notes: list = []
         try:
@@ -418,7 +469,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 23: Font embedding auto-repair (Sprint 23)
+        # Step 23: Font embedding auto-repair
         fonts_embedded: int = 0
         font_embed_notes: list = []
         try:
@@ -427,7 +478,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 24: Optional content / layer accessibility check (Sprint 24)
+        # Step 24: Optional content / layer accessibility check
         ocg_issues: list = []
         try:
             from .ocg_check import check_optional_content
@@ -435,7 +486,7 @@ def remediate(
         except Exception:
             pass
 
-        # Step 25: Encryption / security permissions check (Sprint 25)
+        # Step 25: Encryption / security permissions check
         security: dict = {}
         try:
             from .security_check import check_security
@@ -476,7 +527,9 @@ def remediate(
     except Exception:
         enriched_failures = [vars(f) if hasattr(f, '__dict__') else f for f in result.failures]
 
-    base = (file.filename or "document.pdf").rsplit(".", 1)[0]
+    # SECURITY: sanitize filename before embedding in response header to prevent
+    # header injection via crafted filenames containing CR/LF/quotes.
+    base = _safe_filename((file.filename or "document.pdf").rsplit(".", 1)[0])
     src = manifest_obj.get("source", {})
     conformance = {
         "compliant": result.compliant,
@@ -535,6 +588,7 @@ def remediate(
         "annotIssues": report.get("annotIssues", []),
         "radioGroupsFixed": src.get("radioGroupsFixed", 0),
         "structCompleteness": struct_completeness,
+        "roundTrip": round_trip,
         "verapdfRepairs": verapdf_repairs,
         "verapdfRepairNotes": verapdf_repair_notes,
         # Sprint 19-25
@@ -570,7 +624,8 @@ async def audit_report_endpoint(request: Request) -> Response:
     try:
         request_body = await request.json()
         from .audit_report import generate_report
-        filename = request_body.get("filename", "document.pdf")
+        # SECURITY: sanitize filename to prevent header injection.
+        filename = _safe_filename(request_body.get("filename", "document.pdf"))
         html_str = generate_report(filename, request_body)
         return Response(
             content=html_str.encode("utf-8"),
@@ -595,6 +650,13 @@ async def batch_remediate(
     Note: batch mode skips the human manifest-review step — it applies
     automatic tagging only.  Use for bulk pre-screening, not final output.
     """
+    # SECURITY: cap number of files to prevent DoS via unlimited batch requests.
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch limited to {MAX_BATCH_FILES} files per request.",
+        )
+
     results = []
     for upload in files:
         in_path = None
@@ -633,17 +695,14 @@ async def batch_remediate(
                 "compliant": vresult.compliant,
                 "failedRules": vresult.failed_rules,
                 "elements": report.get("elements", 0),
-                "figures": report.get("figures", 0),
-                "bookmarks": report.get("bookmarks", 0),
+                "mcids": report.get("mcids", 0),
             })
-
-        except HTTPException as exc:
-            results.append({"filename": upload.filename, "error": exc.detail})
-        except Exception as exc:
-            results.append({"filename": upload.filename, "error": str(exc)})
         finally:
             for p in (in_path, out_path):
                 if p and os.path.exists(p):
-                    os.unlink(p)
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
 
     return JSONResponse({"results": results, "count": len(results)})

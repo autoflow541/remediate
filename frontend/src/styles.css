@@ -14,6 +14,15 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); min-height: 100vh; }
+/* Skip navigation link (WCAG 2.4.1) */
+.skip-link {
+  position: absolute; top: -100%; left: 8px;
+  background: var(--panel); color: var(--text); border: 2px solid var(--accent-bright);
+  padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 600;
+  text-decoration: none; z-index: 9999;
+  transition: top 0.1s;
+}
+.skip-link:focus { top: 8px; }
 /* Screen-reader-only utility */
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0;

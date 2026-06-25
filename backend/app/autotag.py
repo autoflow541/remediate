@@ -2,23 +2,22 @@
 
 Runs OpenDataLoader (opendataloader-pdf, Apache 2.0) for local layout analysis
 and translates its structured JSON (typed blocks with bounding boxes) into the
-studio's draft remediation manifest. This replaces font-size heuristics with
-real layout analysis, and the bounding boxes are what make Phase 3 write-back
-tractable (binding each node to the marked-content sequence on its page).
-
-OpenDataLoader is a Java tool with a thin Python wrapper; it needs Java 11+,
-which the Docker image provides (Temurin 11 at $JAVA_HOME).
+studio's draft remediation manifest. Falls back to PyMuPDF font-size heuristics
+when the ODL Java process is unavailable or crashes.
 """
 
 from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import tempfile
 
 from .manifest import build_manifest_from_odl
 from .tables import analyze_tables
+
+log = logging.getLogger(__name__)
 
 
 class AutotagError(RuntimeError):
@@ -29,20 +28,11 @@ class AutotagError(RuntimeError):
 # Invisible-content filtering
 # ---------------------------------------------------------------------------
 
-def _invisible_regions(pdf_path: str) -> dict[int, list[tuple[float, float, float, float]]]:
-    """Return {1-based page → [bbox, …]} for text that is visually invisible.
-
-    Invisible spans include:
-    - Text rendered in white or near-white (fills background, conveys nothing)
-    - Text with font size < 2pt (sub-pixel; used for hidden OCR/search layers)
-
-    Bboxes are in PDF user-space (origin bottom-left, y increases upward) so
-    they match the coordinate space OpenDataLoader uses.  We convert from
-    PyMuPDF's top-left origin by flipping y: y_pdf = page_height - y_mupdf.
-    """
-    result: dict[int, list] = {}
+def _invisible_regions(pdf_path: str) -> dict:
+    """Return {1-based page: [bbox, ...]} for visually invisible text spans."""
+    result: dict = {}
     try:
-        import fitz  # PyMuPDF
+        import fitz
     except ImportError:
         return result
     try:
@@ -56,7 +46,7 @@ def _invisible_regions(pdf_path: str) -> dict[int, list[tuple[float, float, floa
             try:
                 raw = page.get_text("rawdict", flags=0)
                 for block in raw.get("blocks", []) or []:
-                    if block.get("type") != 0:  # 0 = text block
+                    if block.get("type") != 0:
                         continue
                     for line in block.get("lines", []) or []:
                         for span in line.get("spans", []) or []:
@@ -69,7 +59,6 @@ def _invisible_regions(pdf_path: str) -> dict[int, list[tuple[float, float, floa
                             is_tiny  = 0 < size < 2
                             if is_white or is_tiny:
                                 x0, y0, x1, y1 = span["bbox"]
-                                # Convert MuPDF (top-left origin) → PDF space
                                 invisible.append((x0, h - y1, x1, h - y0))
             except Exception:
                 pass
@@ -81,7 +70,7 @@ def _invisible_regions(pdf_path: str) -> dict[int, list[tuple[float, float, floa
 
 
 def _bbox_overlap_ratio(a: tuple, b: tuple) -> float:
-    """Fraction of bbox *a* that is covered by bbox *b* (0.0–1.0)."""
+    """Fraction of bbox *a* covered by bbox *b* (0.0-1.0)."""
     ix0 = max(a[0], b[0]); iy0 = max(a[1], b[1])
     ix1 = min(a[2], b[2]); iy1 = min(a[3], b[3])
     if ix1 <= ix0 or iy1 <= iy0:
@@ -92,12 +81,7 @@ def _bbox_overlap_ratio(a: tuple, b: tuple) -> float:
 
 
 def _filter_invisible_elements(odl_json: dict, invisible: dict) -> dict:
-    """Remove ODL elements that are substantially covered by invisible text regions.
-
-    An element is dropped when ≥ 60 % of its bounding box overlaps with
-    invisible spans on the same page.  Containers (Table, list) are not
-    dropped — only leaf text elements (paragraph, heading, etc.).
-    """
+    """Remove ODL leaf elements substantially covered by invisible text regions."""
     if not invisible:
         return odl_json
 
@@ -122,7 +106,6 @@ def _filter_invisible_elements(odl_json: dict, invisible: dict) -> dict:
         for el in elements or []:
             if _should_drop(el):
                 continue
-            # Recurse into kids
             kids = el.get("kids")
             if kids:
                 el = dict(el)
@@ -145,85 +128,215 @@ def _filter_invisible_elements(odl_json: dict, invisible: dict) -> dict:
 def _engine_version() -> str:
     try:
         from importlib.metadata import version
-
-        return f"opendataloader-pdf {version('opendataloader-pdf')}"
-    except Exception:  # pragma: no cover - defensive
+        return "opendataloader-pdf " + version("opendataloader-pdf")
+    except Exception:
         return "opendataloader-pdf"
 
 
-def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
-    """Run OpenDataLoader on ``pdf_path`` and return a draft manifest dict.
+# ---------------------------------------------------------------------------
+# PyMuPDF heuristic fallback
+# ---------------------------------------------------------------------------
 
-    When ``detect_headers`` is set (default), table header cells are proposed
-    (first row -> column headers) so the studio arrives pre-filled; the human
-    confirms or overrides. Raises ``AutotagError`` on any plumbing failure.
+def _heuristic_autotag(pdf_path: str) -> dict:
+    """Font-size heuristic manifest using PyMuPDF -- fallback when ODL fails."""
+    try:
+        import fitz
+    except ImportError:
+        return {
+            "source": {"filename": os.path.basename(pdf_path),
+                       "engine": "heuristic-nofitz"},
+            "nodes": [],
+        }
+
+    nodes: list = []
+    n = 0
+
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as exc:
+        log.warning("heuristic_autotag: could not open %s: %s", pdf_path, exc)
+        return {
+            "source": {"filename": os.path.basename(pdf_path),
+                       "engine": "heuristic-error"},
+            "nodes": [],
+        }
+
+    all_sizes: list = []
+    pages_blocks: list = []
+    try:
+        for page_num, page in enumerate(doc, start=1):
+            try:
+                raw = page.get_text("rawdict", flags=0)
+                blocks = raw.get("blocks", []) or []
+                pages_blocks.append((page_num, blocks))
+                for block in blocks:
+                    if block.get("type") != 0:
+                        continue
+                    for line in block.get("lines", []) or []:
+                        for span in line.get("spans", []) or []:
+                            sz = span.get("size") or 0
+                            if sz > 0:
+                                all_sizes.append(sz)
+            except Exception:
+                pages_blocks.append((page_num, []))
+    finally:
+        doc.close()
+
+    if all_sizes:
+        from collections import Counter
+        rounded = [round(s * 2) / 2 for s in all_sizes]
+        body_size = Counter(rounded).most_common(1)[0][0]
+    else:
+        body_size = 12.0
+
+    for page_num, blocks in pages_blocks:
+        for block in blocks:
+            if block.get("type") != 0:
+                continue
+            lines = block.get("lines", []) or []
+            if not lines:
+                continue
+            text_parts: list = []
+            sizes: list = []
+            bbox = block.get("bbox") or [0, 0, 0, 0]
+            for line in lines:
+                for span in line.get("spans", []) or []:
+                    t = (span.get("text") or "").strip()
+                    if t:
+                        text_parts.append(t)
+                    sz = span.get("size") or 0
+                    if sz > 0:
+                        sizes.append(sz)
+            text = " ".join(text_parts).strip()
+            if not text:
+                continue
+            avg_size = sum(sizes) / len(sizes) if sizes else body_size
+            ratio = avg_size / body_size if body_size else 1.0
+
+            if ratio >= 1.6:
+                tag = "H1"
+            elif ratio >= 1.3:
+                tag = "H2"
+            elif ratio >= 1.1:
+                tag = "H3"
+            else:
+                tag = "P"
+
+            n += 1
+            nodes.append({
+                "id": "n" + str(n),
+                "tag": tag,
+                "page": page_num,
+                "text": text,
+                "bbox": list(bbox),
+                "source": {
+                    "type": tag.lower(),
+                    "fontSize": avg_size,
+                    "engine": "heuristic",
+                },
+            })
+
+    return {
+        "source": {
+            "filename": os.path.basename(pdf_path),
+            "engine": "heuristic-pymupdf",
+            "bodyFontSize": body_size,
+        },
+        "nodes": nodes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
+    """Run OpenDataLoader on pdf_path and return a draft manifest dict.
+
+    Falls back to PyMuPDF heuristics if ODL/Java is unavailable or crashes.
     """
     if not os.path.isfile(pdf_path):
-        raise AutotagError(f"PDF not found: {pdf_path}")
+        raise AutotagError("PDF not found: " + pdf_path)
+
+    odl_ok = False
+    manifest = None
 
     try:
         import opendataloader_pdf  # type: ignore
-    except ImportError as exc:  # pragma: no cover - image always has it
-        raise AutotagError(
-            "opendataloader-pdf is not installed in this environment."
-        ) from exc
+    except ImportError:
+        log.warning("opendataloader-pdf not installed; using heuristic fallback")
+        opendataloader_pdf = None  # type: ignore
 
-    with tempfile.TemporaryDirectory() as out_dir:
-        try:
-            # JSON only; don't extract image pixel data (the studio renders the
-            # page itself and only needs each figure's bounding box).
-            opendataloader_pdf.convert(
-                input_path=[pdf_path],
-                output_dir=out_dir,
-                format="json",
-                image_output="off",
-            )
-        except Exception as exc:
-            raise AutotagError(f"OpenDataLoader failed: {exc}") from exc
+    if opendataloader_pdf is not None:
+        with tempfile.TemporaryDirectory() as out_dir:
+            try:
+                opendataloader_pdf.convert(
+                    input_path=[pdf_path],
+                    output_dir=out_dir,
+                    format="json",
+                    image_output="off",
+                )
+                produced = glob.glob(os.path.join(out_dir, "*.json"))
+                if produced:
+                    with open(produced[0], "r", encoding="utf-8") as fh:
+                        odl_json = json.load(fh)
+                    invisible = _invisible_regions(pdf_path)
+                    if invisible:
+                        odl_json = _filter_invisible_elements(odl_json, invisible)
+                    manifest = build_manifest_from_odl(
+                        odl_json,
+                        filename=os.path.basename(pdf_path),
+                        engine=_engine_version(),
+                    )
+                    odl_ok = True
+            except Exception as exc:
+                log.warning("ODL failed (%s); falling back to heuristic autotag", exc)
 
-        produced = glob.glob(os.path.join(out_dir, "*.json"))
-        if not produced:
-            raise AutotagError(
-                "OpenDataLoader produced no JSON output (is Java 11+ available?)."
-            )
-
-        with open(produced[0], "r", encoding="utf-8") as fh:
-            odl_json = json.load(fh)
-
-    # Strip elements whose bboxes lie entirely within invisible text regions
-    # (OCR search layers, white-on-white text, sub-pixel font overlays).
-    invisible = _invisible_regions(pdf_path)
-    if invisible:
-        odl_json = _filter_invisible_elements(odl_json, invisible)
-
-    manifest = build_manifest_from_odl(
-        odl_json,
-        filename=os.path.basename(pdf_path),
-        engine=_engine_version(),
-    )
+    if not odl_ok or manifest is None:
+        manifest = _heuristic_autotag(pdf_path)
+        manifest.setdefault("source", {})["odlFallback"] = True
 
     if detect_headers:
         manifest["source"]["tables"] = analyze_tables(manifest)
 
-    # If ODL found no text nodes the PDF is likely a scanned image; try OCR.
     node_count = sum(
         1 for n in manifest.get("nodes", []) if n.get("text", "").strip()
     )
     if node_count == 0:
+        # --- Claude Vision OCR (primary) ---
+        _vision_ok = False
         try:
-            from .ocr import is_scanned, ocr_pdf
-            if is_scanned(pdf_path):
-                ocr_manifest = ocr_pdf(pdf_path)
-                if ocr_manifest.get("nodes"):
-                    ocr_manifest["source"]["filename"] = manifest["source"].get("filename", "")
-                    return ocr_manifest
-        except Exception:
-            pass  # OCR unavailable — return original (empty) manifest
+            from .ocr_vision import detect_scanned_pages, ocr_document, build_manifest_nodes
+            scanned = detect_scanned_pages(pdf_path)
+            if scanned:
+                log.info("autotag: %d scanned page(s) detected — running Vision OCR", len(scanned))
+                ocr_doc = ocr_document(pdf_path, scanned)
+                vision_nodes = build_manifest_nodes(ocr_doc)
+                if vision_nodes:
+                    manifest["nodes"] = vision_nodes
+                    manifest["_ocr_pages"] = ocr_doc
+                    manifest.setdefault("source", {})["ocr"] = "claude-vision"
+                    manifest["source"]["scannedPages"] = len(scanned)
+                    _vision_ok = True
+                    log.info("autotag: Vision OCR produced %d nodes", len(vision_nodes))
+        except Exception as _ve:
+            log.warning("autotag: Vision OCR failed (%s) — trying Tesseract fallback", _ve)
+
+        # --- Tesseract OCR (fallback) ---
+        if not _vision_ok:
+            try:
+                from .ocr import is_scanned, ocr_pdf
+                if is_scanned(pdf_path):
+                    ocr_manifest = ocr_pdf(pdf_path)
+                    if ocr_manifest.get("nodes"):
+                        ocr_manifest["source"]["filename"] = manifest["source"].get("filename", "")
+                        return ocr_manifest
+            except Exception:
+                pass
 
     from .describe import describe_figures
     manifest = describe_figures(pdf_path, manifest)
 
-    # Associate figure captions — Sprint 19 (PDF/UA 7.3).
     try:
         from .caption_detect import detect_captions
         manifest, _ = detect_captions(manifest)
@@ -233,15 +346,12 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     from .fix_tables import auto_tag_tables
     manifest = auto_tag_tables(manifest)
 
-    # Assign TH /Scope attributes (Column/Row/Both) — Sprint 15.
     try:
         from .table_scope import assign_table_scope
         manifest = assign_table_scope(manifest)
     except Exception:
         pass
 
-    # Radio button group consolidation — Sprint 16.
-    # Runs before writeback so skip_struct flags affect struct tree building.
     try:
         import pikepdf as _pikepdf
         _pdf_tmp = _pikepdf.open(pdf_path)
@@ -252,22 +362,18 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     except Exception:
         manifest.setdefault("source", {})["radioGroupsFixed"] = 0
 
-    # Detect and repair nested list structure (WCAG 1.3.1 / PDF/UA 7.7).
     try:
         from .fix_lists import fix_nested_lists
         manifest = fix_nested_lists(manifest)
     except Exception:
         pass
 
-    # Detect TOC blocks and re-tag as TOC/TOCI (PDF/UA clause 7.9).
     try:
         from .toc_detect import detect_toc
         manifest = detect_toc(manifest)
     except Exception:
         pass
 
-    # Detect running headers/footers and mark them as artifacts so write-back
-    # routes them to /Artifact marked content (WCAG: skip page furniture).
     try:
         from .header_footer import detect_header_footer_zones, mark_header_footer_nodes
         zones = detect_header_footer_zones(pdf_path)
@@ -276,9 +382,6 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     except Exception:
         manifest["source"]["headerFooterArtifacts"] = 0
 
-    # Fix reading order — sort nodes by bounding box position (top-to-bottom,
-    # left-to-right), with column detection for multi-column layouts.
-    # WCAG 1.3.2: Meaningful sequence.
     try:
         from .reading_order import fix_reading_order
         manifest, order_changes = fix_reading_order(manifest)
@@ -286,7 +389,6 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     except Exception:
         manifest["source"]["readingOrderFixed"] = 0
 
-    # Per-section language detection — WCAG 3.1.2: Language of Parts.
     try:
         from .lang_detect import detect_node_languages
         manifest, lang_changes = detect_node_languages(manifest)
@@ -294,15 +396,10 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     except Exception:
         manifest["source"]["langAnnotations"] = 0
 
-    
-
-    
-
-    
-
-    # Formula / math expression detection — Sprint 21 (PDF/UA 7.8).
     try:
         from .formula_tag import tag_formulas
         manifest, _ = tag_formulas(manifest)
     except Exception:
         pass
+
+    return manifest

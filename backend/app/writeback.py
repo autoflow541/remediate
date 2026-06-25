@@ -270,7 +270,69 @@ class StructTreeBuilder:
                     best, best_area = lf, area
         return best
 
+    # ------------------------------------------------------------------
+    # OCR invisible text layer (scanned pages)
+    # ------------------------------------------------------------------
+
+    def _ensure_ocr_font(self, page: pikepdf.Page) -> None:
+        """Add /F_OCR (Helvetica) to the page's /Resources if not present."""
+        res = page.obj.get("/Resources")
+        if res is None:
+            res = Dictionary()
+            page.obj["/Resources"] = res
+        fonts = res.get("/Font")
+        if fonts is None:
+            fonts = Dictionary()
+            res["/Font"] = fonts
+        if Name("/F_OCR") not in fonts:
+            fonts[Name("/F_OCR")] = Dictionary(
+                Type=Name("/Font"),
+                Subtype=Name("/Type1"),
+                BaseFont=Name("/Helvetica"),
+                Encoding=Name("/WinAnsiEncoding"),
+            )
+
+    def _inject_ocr_text_layer(self, page: pikepdf.Page, page_ocr: dict) -> None:
+        """Append an invisible text stream (Tr 3) for each OCR element.
+
+        This is called *before* remark_page processes the content stream.
+        remark_page will then find these text operators by position and bind
+        the correct MCIDs and structure tags to them.
+        """
+        from .ocr_vision import build_ocr_text_stream
+        elements = page_ocr.get("elements", [])
+        if not elements:
+            return
+        self._ensure_ocr_font(page)
+        stream_bytes = build_ocr_text_stream(elements)
+        if not stream_bytes.strip():
+            return
+        ocr_stream = pikepdf.Stream(self.pdf, stream_bytes)
+        existing = page.obj.get("/Contents")
+        if existing is None:
+            page.obj["/Contents"] = ocr_stream
+        elif existing.is_stream:
+            page.obj["/Contents"] = Array([existing, self.pdf.make_indirect(ocr_stream)])
+        else:
+            arr = list(existing)
+            arr.append(self.pdf.make_indirect(ocr_stream))
+            page.obj["/Contents"] = Array(arr)
+
     def remark_page(self, page_index: int, page: pikepdf.Page) -> None:
+        # --- Scanned page: inject invisible OCR text layer first ---
+        _ocr_pages = self.manifest.get("_ocr_pages", {})
+        _page_ocr = _ocr_pages.get(str(page_index))
+        if _page_ocr and _page_ocr.get("elements"):
+            try:
+                _has_text = any(
+                    str(ins.operator) in {"Tj", "TJ", "'", '"'}
+                    for ins in pikepdf.parse_content_stream(page)
+                )
+            except Exception:
+                _has_text = False
+            if not _has_text:
+                self._inject_ocr_text_layer(page, _page_ocr)
+
         leaves = self._leaves_for_page(page_index)
         if not leaves:
             return
@@ -823,6 +885,16 @@ def remediate_pdf(pdf_path: str, manifest: dict, out_path: str) -> dict:
             except Exception:
                 report["annotContentsFixed"] = 0
                 report["annotIssues"] = []
+
+            # PDF/UA-1 requires PDF 1.4 or later (ISO 14289-1 s6.1).
+            # Bump any older version silently before saving.
+            try:
+                ver = tuple(int(x) for x in pdf.pdf_version.split("."))
+                if ver < (1, 4):
+                    pdf.pdf_version = "1.4"
+                    report["pdfVersionBumped"] = True
+            except Exception:
+                pass
 
             pdf.save(out_path)
     except WritebackError:

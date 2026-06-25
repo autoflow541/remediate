@@ -73,12 +73,36 @@ export default function App() {
       // Auto-fixed links (descriptive /Alt injected) do not.
       const linkCount = conformance?.linkQualityCount ?? 0;
       const linkPenalty = Math.min(linkCount * 3, 10);
-      const score = (conformance?.compliant && contrastPassed && linkCount === 0)
+      // Font errors (missing ToUnicode / unembedded) = text invisible to screen readers.
+      const fontErrorCount = (conformance?.fontIssues ?? []).filter(f => f.severity === "error").length;
+      const fontPenalty = Math.min(fontErrorCount * 5, 20);
+      // Non-text contrast (WCAG 1.4.11) — UI components and graphics.
+      const nontextContrastCount = conformance?.nontextContrastCount ?? 0;
+      const nontextPenalty = Math.min(nontextContrastCount * 2, 10);
+      // Structure completeness (PDF/UA §7.1) — orphaned content not in struct tree.
+      const orphanedPages = conformance?.structCompleteness?.orphaned_count ?? 0;
+      const structPenalty = Math.min(orphanedPages * 5, 15);
+      // Metadata issues (PDF/UA XMP requirements).
+      const metadataErrorCount = (conformance?.metadataIssues ?? []).filter(i => i.severity === "error").length;
+      const metadataPenalty = Math.min(metadataErrorCount * 3, 9);
+      // Round-trip check — writeback failures caught by reading the output PDF.
+      const rtFailures = conformance?.roundTrip?.failures ?? [];
+      const rtErrorCount = rtFailures.filter(f => f.severity === "error").length;
+      const rtPenalty = Math.min(rtErrorCount * 8, 25);
+      const score = (
+        conformance?.compliant && contrastPassed && linkCount === 0 &&
+        fontErrorCount === 0 && nontextContrastCount === 0 &&
+        orphanedPages === 0 && metadataErrorCount === 0 && rtErrorCount === 0
+      )
         ? 100
         : (() => {
             const { score: s } = scoreManifest(m, { contrastPassed });
             let base = contrastCount > 0 ? Math.min(s, 85) : s;
-            return Math.max(base - linkPenalty, 0);
+            if (fontErrorCount > 0)      base = Math.min(base, 80);
+            if (orphanedPages > 0)       base = Math.min(base, 80);
+            if (metadataErrorCount > 0)  base = Math.min(base, 90);
+            if (rtErrorCount > 0)        base = Math.min(base, 80);
+            return Math.max(base - linkPenalty - fontPenalty - nontextPenalty - structPenalty - metadataPenalty - rtPenalty, 0);
           })();
       setResult({ conformance, score, filename, downloadUrl, manifest: m });
       setScreen("done");
@@ -208,7 +232,7 @@ function UploadScreen({ onFile, error }) {
   const noBackend = !api.HAS_BACKEND;
 
   return (
-    <main className="screen">
+    <main id="main-content" className="screen">
       {/* Hidden H1 focus target — announces page to screen readers on screen transition */}
       <h1 ref={headingRef} tabIndex={-1} className="sr-only">PDF Accessibility Remediation</h1>
       <p className="app-title" aria-hidden="true">PDF Accessibility Remediation</p>
@@ -259,7 +283,7 @@ function ProcessingScreen({ message }) {
   useEffect(() => { headingRef.current?.focus(); }, []);
 
   return (
-    <main className="screen">
+    <main id="main-content" className="screen">
       {/* Focus target — tells screen reader we're on a new screen */}
       <h1 ref={headingRef} tabIndex={-1} className="sr-only">Processing your PDF</h1>
       {/* aria-live announces status updates (message changes) without re-focusing */}
@@ -290,7 +314,7 @@ function HallwayScreen({ question, qIndex, total, onAnswer }) {
   };
 
   return (
-    <main className="screen">
+    <main id="main-content" className="screen">
       <div className="screen-card">
         <p className="hallway-progress" aria-live="polite">
           Question {qIndex + 1} of {total}
@@ -324,7 +348,7 @@ function HallwayScreen({ question, qIndex, total, onAnswer }) {
               {question.hint ? "Image contains text — provide alt text" : "What does this image show?"}
             </h1>
             {question.hint && (
-              <p className="muted" style={{ marginBottom: 10, fontSize: "0.875rem", color: "#b45309", background: "#fef3c7", padding: "8px 12px", borderRadius: 6 }}>
+              <p className="muted" style={{ marginBottom: 10, fontSize: "0.875rem", color: "#92400e", background: "#fef3c7", padding: "8px 12px", borderRadius: 6 }}>
                 ⚠ {question.hint}
               </p>
             )}
@@ -531,8 +555,8 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
   const escHtml = (s) => String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 
   const statusBadge = (ok) => ok
-    ? `<span style="color:#22c55e;font-weight:700">PASS</span>`
-    : `<span style="color:#ef4444;font-weight:700">FAIL</span>`;
+    ? `<span style="color:#166534;font-weight:700">PASS</span>`
+    : `<span style="color:#b91c1c;font-weight:700">FAIL</span>`;
 
   const readingOrderFixed = conformance?.readingOrderFixed || 0;
   const langAnnotations = conformance?.langAnnotations || 0;
@@ -767,7 +791,7 @@ ${(conformance?.abbreviations||[]).length > 0 ? `<h2>Abbreviations &amp; Acronym
 ${(conformance?.abbreviations||[]).slice(0,30).map(a=>`<tr><td>${escHtml(a.abbreviation)}</td><td>${a.count}</td><td>${escHtml(a.type)}</td></tr>`).join("")}
 </tbody></table>` : ""}
 ${conformance?.readingLevel?.grade_level ? `<h2>Reading Level (WCAG 3.1.5 — Advisory)</h2>
-<p>Flesch-Kincaid Grade ${conformanceR.readingLevel.grade_level} (Flesch ease: ${conformanceR.readingLevel.flesch_ease}) — ${escHtml(conformanceR.readingLevel.description||"")}</p>` : ""}
+<p>Flesch-Kincaid Grade ${conformance.readingLevel.grade_level} (Flesch ease: ${conformance.readingLevel.flesch_ease}) — ${escHtml(conformance.readingLevel.description||"")}</p>` : ""}
 <h2>Standards Checked</h2>
 <ul>
   <li>WCAG 2.2 Level AA</li>
@@ -837,13 +861,19 @@ function DoneScreen({ result, onReset }) {
   const nestedListsFixed = conformance?.nestedListsFixed || 0;
   // Sprint 8
   const nontextContrastIssues = conformance?.nontextContrastIssues || [];
+  const nontextContrastCount = conformance?.nontextContrastCount ?? 0;
   const targetSizeIssues = conformance?.targetSizeIssues || [];
   const xfaWarning = conformance?.xfaWarning || null;
   const fontIssues = conformance?.fontIssues || [];
+  const orphanedPages = conformance?.structCompleteness?.orphaned_count ?? 0;
   // Sprint 9
   const reflowIssues = conformance?.reflowIssues || [];
   const metadataIssues = conformance?.metadataIssues || [];
   const metadataErrors = metadataIssues.filter(i => i.severity === "error");
+  // Round-trip verification
+  const roundTripFailures = conformance?.roundTrip?.failures ?? [];
+  const roundTripErrors = roundTripFailures.filter(f => f.severity === "error");
+  const roundTripWarnings = roundTripFailures.filter(f => f.severity === "warning");
   // Sprint 11
   const watermarkCandidates = conformance?.watermarkCandidates || [];
   const abbreviations = conformance?.abbreviations || [];
@@ -924,7 +954,7 @@ function DoneScreen({ result, onReset }) {
   if (fontsEmbedded > 0) fixed.push(`${fontsEmbedded} font${fontsEmbedded !== 1 ? "s" : ""} embedded for reliable text rendering (PDF/UA 7.21)`);
 
   return (
-    <main className="screen screen-preview">
+    <main id="main-content" className="screen screen-preview">
       <div className="screen-card">
         <span className="done-icon" aria-hidden="true">{pass ? "✅" : "📄"}</span>
         <h1 ref={headingRef} tabIndex={-1} className="done-headline">{pass ? "PDF is accessible" : "PDF remediated"}</h1>
@@ -943,7 +973,7 @@ function DoneScreen({ result, onReset }) {
 
         {contrastCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {contrastCount} contrast issue{contrastCount !== 1 ? "s" : ""} detected (WCAG 1.4.3)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{contrastCount} contrast issue{contrastCount !== 1 ? "s" : ""} detected (WCAG 1.4.3)</strong>
             <p>These text colors use complex color spaces or rendering modes that couldn't be auto-corrected.</p>
             {contrastFailures.slice(0, 5).map((f, i) => (
               <div key={i} className="contrast-item">
@@ -954,9 +984,52 @@ function DoneScreen({ result, onReset }) {
           </div>
         )}
 
+        {fontIssues.filter(f => f.severity === "error").length > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong><span aria-hidden="true">⚠ </span>{fontIssues.filter(f => f.severity === "error").length} font issue{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""} — text may be unreadable to screen readers (PDF/UA §7.21.3)</strong>
+            <p>These fonts lack a ToUnicode map or are not embedded. Screen readers cannot extract the text.</p>
+            {fontIssues.filter(f => f.severity === "error").slice(0, 5).map((f, i) => (
+              <div key={i} className="contrast-item">{f.font_name}: {f.description}</div>
+            ))}
+          </div>
+        )}
+
+        {nontextContrastCount > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong><span aria-hidden="true">⚠ </span>{nontextContrastCount} non-text contrast issue{nontextContrastCount !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
+            <p>UI components or graphics below the 3:1 contrast ratio. Review and adjust colors in the source document.</p>
+          </div>
+        )}
+
+        {orphanedPages > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong><span aria-hidden="true">⚠ </span>{orphanedPages} page{orphanedPages !== 1 ? "s" : ""} with content outside the structure tree (PDF/UA §7.1)</strong>
+            <p>Some page content is not reachable by screen readers. This may indicate untagged content streams or XObject content.</p>
+          </div>
+        )}
+
+        {roundTripErrors.length > 0 && (
+          <div className="contrast-warn" role="alert">
+            <strong><span aria-hidden="true">✗ </span>Output PDF failed {roundTripErrors.length} writeback verification check{roundTripErrors.length !== 1 ? "s" : ""}</strong>
+            <p>The following properties were not found in the output PDF — writeback may have silently failed:</p>
+            {roundTripErrors.map((f, i) => (
+              <div key={i} className="contrast-item">[{f.check}] {f.description}</div>
+            ))}
+          </div>
+        )}
+
+        {roundTripWarnings.length > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong><span aria-hidden="true">⚠ </span>{roundTripWarnings.length} output PDF warning{roundTripWarnings.length !== 1 ? "s" : ""}</strong>
+            {roundTripWarnings.map((f, i) => (
+              <div key={i} className="contrast-item">[{f.check}] {f.description}</div>
+            ))}
+          </div>
+        )}
+
         {linkCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {linkCount} link{linkCount !== 1 ? "s" : ""} could not be auto-resolved (WCAG 2.4.4)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{linkCount} link{linkCount !== 1 ? "s" : ""} could not be auto-resolved (WCAG 2.4.4)</strong>
             <p>These links have no resolvable URL — an accessible name could not be generated.</p>
             {linkIssues.slice(0, 4).map((l, i) => (
               <div key={i} className="contrast-item">
@@ -969,7 +1042,7 @@ function DoneScreen({ result, onReset }) {
 
         {altIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {altIssueCount} image{altIssueCount !== 1 ? "s" : ""} need review (WCAG 1.1.1)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{altIssueCount} image{altIssueCount !== 1 ? "s" : ""} need review (WCAG 1.1.1)</strong>
             <p>These figures have missing, empty, or generic alt text and require a human description.</p>
             {altIssues.slice(0, 4).map((a, i) => (
               <div key={i} className="contrast-item">
@@ -982,7 +1055,7 @@ function DoneScreen({ result, onReset }) {
 
         {colorOnlyCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {colorOnlyCount} potential color-only pattern{colorOnlyCount !== 1 ? "s" : ""} detected (WCAG 1.4.1)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{colorOnlyCount} potential color-only pattern{colorOnlyCount !== 1 ? "s" : ""} detected (WCAG 1.4.1)</strong>
             <p>Colored shapes were found that may convey meaning through color alone. Add text labels or patterns to these elements.</p>
             {colorOnlyWarnings.slice(0, 3).map((w, i) => (
               <div key={i} className="contrast-item">
@@ -995,7 +1068,7 @@ function DoneScreen({ result, onReset }) {
 
         {headingIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {headingIssueCount} heading structure issue{headingIssueCount !== 1 ? "s" : ""} detected (WCAG 1.3.1 / 2.4.6)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{headingIssueCount} heading structure issue{headingIssueCount !== 1 ? "s" : ""} detected (WCAG 1.3.1 / 2.4.6)</strong>
             <p>The heading hierarchy has structural problems. These must be corrected in the source document.</p>
             {headingIssues.slice(0, 4).map((h, i) => (
               <div key={i} className="contrast-item">
@@ -1008,7 +1081,7 @@ function DoneScreen({ result, onReset }) {
 
         {sensoryIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {sensoryIssueCount} sensory-only reference{sensoryIssueCount !== 1 ? "s" : ""} detected (WCAG 1.3.3)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{sensoryIssueCount} sensory-only reference{sensoryIssueCount !== 1 ? "s" : ""} detected (WCAG 1.3.3)</strong>
             <p>Instructions that reference only shape, color, size, or visual position may be inaccessible. Review these passages and add non-sensory identifiers (text labels, headings, or accessible names).</p>
             {sensoryIssues.slice(0, 4).map((s, i) => (
               <div key={i} className="contrast-item">
@@ -1021,7 +1094,7 @@ function DoneScreen({ result, onReset }) {
 
         {labelNameIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {labelNameIssueCount} form field{labelNameIssueCount !== 1 ? "s" : ""} fail Label in Name (WCAG 2.5.3)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{labelNameIssueCount} form field{labelNameIssueCount !== 1 ? "s" : ""} fail Label in Name (WCAG 2.5.3)</strong>
             <p>The visible label for these fields is not present in their accessible name. Voice control users cannot activate them by speaking the visible label.</p>
             {labelNameIssues.slice(0, 4).map((l, i) => (
               <div key={i} className="contrast-item">
@@ -1034,14 +1107,14 @@ function DoneScreen({ result, onReset }) {
 
         {xfaWarning && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ XFA Form Detected — Manual Remediation Required</strong>
+            <strong><span aria-hidden="true">⚠ </span>XFA Form Detected — Manual Remediation Required</strong>
             <p>This PDF contains an XFA (XML Forms Architecture) form which cannot be made accessible through structural tagging alone. XFA forms must be rebuilt as AcroForm PDFs or converted to an accessible HTML/WCAG-conformant format. Assistive technologies cannot reliably access XFA content.</p>
           </div>
         )}
 
         {metadataErrors.length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {metadataErrors.length} Metadata Error{metadataErrors.length !== 1 ? "s" : ""} (PDF/UA §7.1)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{metadataErrors.length} Metadata Error{metadataErrors.length !== 1 ? "s" : ""} (PDF/UA §7.1)</strong>
             {metadataErrors.slice(0, 3).map((m, i) => (
               <div key={i} className="contrast-item">{m.description}</div>
             ))}
@@ -1050,7 +1123,7 @@ function DoneScreen({ result, onReset }) {
 
         {fontIssues.filter(f => f.severity === "error").length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {fontIssues.filter(f => f.severity === "error").length} Font Embedding / ToUnicode Error{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""}</strong>
+            <strong><span aria-hidden="true">⚠ </span>{fontIssues.filter(f => f.severity === "error").length} Font Embedding / ToUnicode Error{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""}</strong>
             <p>Fonts without proper embedding or ToUnicode maps prevent screen readers from reading the text. These must be fixed in the source document.</p>
             {fontIssues.filter(f => f.severity === "error").slice(0, 3).map((f, i) => (
               <div key={i} className="contrast-item">"{f.font_name}": {f.description}</div>
@@ -1060,7 +1133,7 @@ function DoneScreen({ result, onReset }) {
 
         {nontextContrastIssues.length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {nontextContrastIssues.length} Non-text Contrast Issue{nontextContrastIssues.length !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{nontextContrastIssues.length} Non-text Contrast Issue{nontextContrastIssues.length !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
             <p>UI component boundaries and graphical elements require a 3:1 contrast ratio against adjacent colors. These cannot be auto-fixed and require source correction.</p>
             {nontextContrastIssues.slice(0, 2).map((n, i) => (
               <div key={i} className="contrast-item">Page {n.page}: {n.description}</div>
@@ -1071,7 +1144,7 @@ function DoneScreen({ result, onReset }) {
 
         {altQualityIssues.length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {altQualityIssues.length} Low-Quality Alt Text Description{altQualityIssues.length !== 1 ? "s" : ""} (WCAG 1.1.1)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{altQualityIssues.length} Low-Quality Alt Text Description{altQualityIssues.length !== 1 ? "s" : ""} (WCAG 1.1.1)</strong>
             <p>These image descriptions were flagged as insufficient by AI review. Score ≥4 is good; ≤2 was auto-improved where possible.</p>
             {altQualityIssues.slice(0, 2).map((a, i) => (
               <div key={i} className="contrast-item">Page {a.page}: score {a.score}/5 — "{a.current_alt?.slice(0, 60)}{a.current_alt?.length > 60 ? "…" : ""}"</div>
@@ -1088,7 +1161,7 @@ function DoneScreen({ result, onReset }) {
 
         {ocgIssues.filter(i => i.severity === "warning").length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong>⚠ {ocgIssues.filter(i => i.severity === "warning").length} Optional Content Layer Issue{ocgIssues.filter(i => i.severity === "warning").length !== 1 ? "s" : ""} (PDF/UA §7.11)</strong>
+            <strong><span aria-hidden="true">⚠ </span>{ocgIssues.filter(i => i.severity === "warning").length} Optional Content Layer Issue{ocgIssues.filter(i => i.severity === "warning").length !== 1 ? "s" : ""} (PDF/UA §7.11)</strong>
             <p>Layers hidden by default may conceal content from screen readers. Verify hidden layers are decorative only.</p>
             {ocgIssues.filter(i => i.severity === "warning").slice(0, 2).map((o, i) => (
               <div key={i} className="contrast-item">{o.layer ? `Layer "${o.layer}": ` : ""}{o.description}</div>
