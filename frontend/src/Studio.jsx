@@ -595,6 +595,14 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
     ["Abbreviations detected (WCAG 3.1.4)", (conformance?.abbreviations || []).length, true],
     ["Reading level (Flesch-Kincaid)", (conformance?.readingLevel || {}).grade_level ?? "—", true],
     ["Contrast fixes",       conformance?.contrastFixes || 0,       true],
+    // Sprint 19-25
+    ["Figure captions linked (PDF/UA 7.3)", conformance?.captionsLinked || 0, true],
+    ["Formulas tagged with /Alt (PDF/UA 7.8)", conformance?.formulasTagged || 0, true],
+    ["AI vision alt texts generated (WCAG 1.1.1)", conformance?.aiAltGenerated || 0, true],
+    ["Contrast stream repairs (WCAG 1.4.3)", conformance?.contrastRepairs || 0, true],
+    ["Fonts embedded (PDF/UA 7.21)", conformance?.fontsEmbedded || 0, true],
+    ["Optional content layer issues (PDF/UA 7.11)", (conformance?.ocgIssues || []).filter(i => i.severity === "warning").length, (conformance?.ocgIssues || []).filter(i => i.severity === "warning").length === 0],
+    ["Encryption accessibility (PDF/UA 7.16)", (conformance?.security || {}).severity === "error" ? "BLOCKED" : (conformance?.security || {}).encrypted ? "Allowed" : "Not encrypted", (conformance?.security || {}).severity !== "error"],
     ["Background fills whitened", conformance?.backgroundFillsWhitened || 0, true],
     ["Contrast issues remaining", conformance?.contrastCount || 0,  (conformance?.contrastCount || 0) === 0],
     ["Link quality issues",  linkIssues.length,                     linkIssues.length === 0],
@@ -850,6 +858,14 @@ function DoneScreen({ result, onReset }) {
   const verapdfRepairNotes = conformance?.verapdfRepairNotes || [];
   const structCompleteness = conformance?.structCompleteness || {};
   const pdfuaMetadata = conformance?.pdfuaMetadata || {};
+  // Sprint 19-25
+  const captionsLinked = conformance?.captionsLinked || 0;
+  const formulasTagged = conformance?.formulasTagged || 0;
+  const aiAltGenerated = conformance?.aiAltGenerated || 0;
+  const contrastRepairs = conformance?.contrastRepairs || 0;
+  const fontsEmbedded = conformance?.fontsEmbedded || 0;
+  const ocgIssues = conformance?.ocgIssues || [];
+  const security = conformance?.security || {};
 
   const pass = conformance?.compliant && score === 100 && contrastCount === 0 && linkCount === 0
     && headingIssueCount === 0 && labelNameIssueCount === 0
@@ -901,6 +917,11 @@ function DoneScreen({ result, onReset }) {
   if (annotContentsFixed > 0) fixed.push(`${annotContentsFixed} annotation${annotContentsFixed !== 1 ? "s" : ""} given accessible descriptions (PDF/UA §7.18.1)`);
   if (radioGroupsFixed > 0) fixed.push(`${radioGroupsFixed} radio button group${radioGroupsFixed !== 1 ? "s" : ""} structured for screen readers`);
   if (verapdfRepairs > 0) fixed.push(`${verapdfRepairs} additional PDF/UA clause${verapdfRepairs !== 1 ? "s" : ""} auto-repaired post-validation`);
+  if (captionsLinked > 0) fixed.push(`${captionsLinked} figure caption${captionsLinked !== 1 ? "s" : ""} linked as Caption struct elements (PDF/UA 7.3)`);
+  if (formulasTagged > 0) fixed.push(`${formulasTagged} mathematical expression${formulasTagged !== 1 ? "s" : ""} tagged as Formula with text alternative (PDF/UA 7.8)`);
+  if (aiAltGenerated > 0) fixed.push(`AI generated alt text for ${aiAltGenerated} figure${aiAltGenerated !== 1 ? "s" : ""} using Claude Vision (WCAG 1.1.1)`);
+  if (contrastRepairs > 0) fixed.push(`${contrastRepairs} low-contrast text colour${contrastRepairs !== 1 ? "s" : ""} auto-corrected in content stream (WCAG 1.4.3)`);
+  if (fontsEmbedded > 0) fixed.push(`${fontsEmbedded} font${fontsEmbedded !== 1 ? "s" : ""} embedded for reliable text rendering (PDF/UA 7.21)`);
 
   return (
     <main className="screen screen-preview">
@@ -1054,6 +1075,23 @@ function DoneScreen({ result, onReset }) {
             <p>These image descriptions were flagged as insufficient by AI review. Score ≥4 is good; ≤2 was auto-improved where possible.</p>
             {altQualityIssues.slice(0, 2).map((a, i) => (
               <div key={i} className="contrast-item">Page {a.page}: score {a.score}/5 — "{a.current_alt?.slice(0, 60)}{a.current_alt?.length > 60 ? "…" : ""}"</div>
+            ))}
+          </div>
+        )}
+
+        {security?.severity === "error" && (
+          <div className="contrast-warn" role="alert">
+            <strong>🔒 Encryption Blocks Accessibility (PDF/UA §7.16)</strong>
+            <p>{security.description}</p>
+          </div>
+        )}
+
+        {ocgIssues.filter(i => i.severity === "warning").length > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong>⚠ {ocgIssues.filter(i => i.severity === "warning").length} Optional Content Layer Issue{ocgIssues.filter(i => i.severity === "warning").length !== 1 ? "s" : ""} (PDF/UA §7.11)</strong>
+            <p>Layers hidden by default may conceal content from screen readers. Verify hidden layers are decorative only.</p>
+            {ocgIssues.filter(i => i.severity === "warning").slice(0, 2).map((o, i) => (
+              <div key={i} className="contrast-item">{o.layer ? `Layer "${o.layer}": ` : ""}{o.description}</div>
             ))}
           </div>
         )}

@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
@@ -397,8 +397,6 @@ def remediate(
             pass
 
         # Step 21: veraPDF targeted auto-repair (Sprint 18)
-        # Re-runs only if veraPDF found failures — patches the output file in-place
-        # then re-reads it for delivery.
         verapdf_repairs: int = 0
         verapdf_repair_notes: list = []
         if not result.compliant and result.failures:
@@ -410,6 +408,40 @@ def remediate(
                 )
             except Exception:
                 pass
+
+        # Step 22: Contrast auto-fix — patch low-contrast text colours (Sprint 22)
+        contrast_repairs: int = 0
+        contrast_repair_notes: list = []
+        try:
+            from .contrast_fix import fix_contrast
+            contrast_repairs, contrast_repair_notes = fix_contrast(out_path, contrast_failures)
+        except Exception:
+            pass
+
+        # Step 23: Font embedding auto-repair (Sprint 23)
+        fonts_embedded: int = 0
+        font_embed_notes: list = []
+        try:
+            from .font_embed import embed_fonts
+            fonts_embedded, font_embed_notes = embed_fonts(out_path, font_issues)
+        except Exception:
+            pass
+
+        # Step 24: Optional content / layer accessibility check (Sprint 24)
+        ocg_issues: list = []
+        try:
+            from .ocg_check import check_optional_content
+            ocg_issues = check_optional_content(out_path)
+        except Exception:
+            pass
+
+        # Step 25: Encryption / security permissions check (Sprint 25)
+        security: dict = {}
+        try:
+            from .security_check import check_security
+            security = check_security(out_path)
+        except Exception:
+            pass
 
         with open(out_path, "rb") as fh:
             pdf_bytes = fh.read()
@@ -501,10 +533,21 @@ def remediate(
         "pdfuaMetadata": report.get("pdfuaMetadata", {}),
         "annotContentsFixed": report.get("annotContentsFixed", 0),
         "annotIssues": report.get("annotIssues", []),
-        "radioGroupsFixed": report.get("radioGroupsFixed", 0),
+        "radioGroupsFixed": src.get("radioGroupsFixed", 0),
         "structCompleteness": struct_completeness,
         "verapdfRepairs": verapdf_repairs,
         "verapdfRepairNotes": verapdf_repair_notes,
+        # Sprint 19-25
+        "captionsLinked": src.get("captionsLinked", 0),
+        "formulasTagged": src.get("formulasTagged", 0),
+        "aiAltGenerated": src.get("aiAltGenerated", 0),
+        "contrastRepairs": contrast_repairs,
+        "contrastRepairNotes": contrast_repair_notes,
+        "fontsEmbedded": fonts_embedded,
+        "fontEmbedNotes": font_embed_notes,
+        "ocgIssues": ocg_issues,
+        "ocgIssueCount": len(ocg_issues),
+        "security": security,
     }
     headers = {
         "Content-Disposition": f'attachment; filename="{base}.remediated.pdf"',
@@ -515,3 +558,92 @@ def remediate(
         "X-Remediation-MCIDs": str(report.get("mcids", 0)),
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@app.post("/audit-report")
+async def audit_report_endpoint(request: Request) -> Response:
+    """Generate an HTML accessibility audit report from a conformance dict.
+
+    POST the JSON conformance object (from X-Conformance header) and receive
+    a self-contained HTML report suitable for accessibility coordinators.
+    """
+    try:
+        request_body = await request.json()
+        from .audit_report import generate_report
+        filename = request_body.get("filename", "document.pdf")
+        html_str = generate_report(filename, request_body)
+        return Response(
+            content=html_str.encode("utf-8"),
+            media_type="text/html; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.audit.html"'},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/batch")
+async def batch_remediate(
+    files: list[UploadFile] = File(...),
+    flavour: str = Form(DEFAULT_FLAVOUR),
+) -> JSONResponse:
+    """Remediate multiple PDFs using their embedded manifests (if any).
+
+    Each file is auto-tagged and immediately remediated with default settings.
+    Returns a JSON list of per-file conformance summaries.  Large files or
+    files with complex manifests should use /remediate individually.
+
+    Note: batch mode skips the human manifest-review step — it applies
+    automatic tagging only.  Use for bulk pre-screening, not final output.
+    """
+    results = []
+    for upload in files:
+        in_path = None
+        out_path = None
+        try:
+            in_path = _save_upload(upload)
+            fd, out_path = tempfile.mkstemp(suffix=".pdf")
+            os.close(fd)
+
+            # Auto-tag
+            try:
+                manifest_obj = autotag_pdf(in_path)
+            except AutotagError as exc:
+                results.append({"filename": upload.filename, "error": str(exc)})
+                continue
+
+            if upload.filename:
+                manifest_obj.setdefault("source", {})["filename"] = upload.filename
+
+            # Remediate
+            try:
+                report = remediate_pdf(in_path, manifest_obj, out_path)
+            except WritebackError as exc:
+                results.append({"filename": upload.filename, "error": str(exc)})
+                continue
+
+            # Validate
+            try:
+                vresult = validate_pdf(out_path, flavour=flavour)
+            except VeraPDFError as exc:
+                results.append({"filename": upload.filename, "error": str(exc)})
+                continue
+
+            results.append({
+                "filename": upload.filename,
+                "compliant": vresult.compliant,
+                "failedRules": vresult.failed_rules,
+                "elements": report.get("elements", 0),
+                "figures": report.get("figures", 0),
+                "bookmarks": report.get("bookmarks", 0),
+            })
+
+        except HTTPException as exc:
+            results.append({"filename": upload.filename, "error": exc.detail})
+        except Exception as exc:
+            results.append({"filename": upload.filename, "error": str(exc)})
+        finally:
+            for p in (in_path, out_path):
+                if p and os.path.exists(p):
+                    os.unlink(p)
+
+    return JSONResponse({"results": results, "count": len(results)})

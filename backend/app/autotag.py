@@ -223,6 +223,13 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     from .describe import describe_figures
     manifest = describe_figures(pdf_path, manifest)
 
+    # Associate figure captions — Sprint 19 (PDF/UA 7.3).
+    try:
+        from .caption_detect import detect_captions
+        manifest, _ = detect_captions(manifest)
+    except Exception:
+        pass
+
     from .fix_tables import auto_tag_tables
     manifest = auto_tag_tables(manifest)
 
@@ -303,18 +310,9 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
 
     
 
-    # AI content enhancement — Sprint 12/13.
+    # Formula / math expression detection — Sprint 21 (PDF/UA 7.8).
     try:
-        from .ai_enhance import enhance_manifest
-        manifest = enhance_manifest(manifest)
+        from .formula_tag import tag_formulas
+        manifest, _ = tag_formulas(manifest)
     except Exception:
         pass
-
-    # AI layout analysis — Sprint 6.
-    try:
-        from .ai_analyze import analyze_pdf as _ai_analyze
-        manifest = _ai_analyze(pdf_path, manifest)
-    except Exception:
-        pass
-
-    return manifest
