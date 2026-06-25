@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Node / Vite
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/public/sample-*.pdf
+
+# Env (the studio's .env.example is committed; real .env is not)
+.env
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local test artifacts
+*.tags.json
+*.manifest.json
+*.remediated.pdf
+remediated_*.pdf
+**/headers.txt
+samples/_lab_*.py

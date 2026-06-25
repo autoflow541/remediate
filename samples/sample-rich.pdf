@@ -1,0 +1,56 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 911 >>
+stream
+BT /F1 24 Tf 72 700 Td (Quarterly Accessibility Report) Tj ET
+BT /F1 12 Tf 72 660 Td (This document summarizes remediation progress for Q2 2026.) Tj ET
+BT /F1 12 Tf 72 640 Td (The table below lists document counts by status.) Tj ET
+72 576 150 24 re S
+222 576 150 24 re S
+372 576 150 24 re S
+72 552 150 24 re S
+222 552 150 24 re S
+372 552 150 24 re S
+72 528 150 24 re S
+222 528 150 24 re S
+372 528 150 24 re S
+BT /F1 11 Tf 78 584 Td (Status) Tj ET
+BT /F1 11 Tf 228 584 Td (Count) Tj ET
+BT /F1 11 Tf 378 584 Td (Owner) Tj ET
+BT /F1 11 Tf 78 560 Td (Remediated) Tj ET
+BT /F1 11 Tf 228 560 Td (128) Tj ET
+BT /F1 11 Tf 378 560 Td (Alex) Tj ET
+BT /F1 11 Tf 78 536 Td (In progress) Tj ET
+BT /F1 11 Tf 228 536 Td (37) Tj ET
+BT /F1 11 Tf 378 536 Td (Sam) Tj ET
+BT /F1 12 Tf 72 498 Td (" Review reading order) Tj ET
+BT /F1 12 Tf 72 480 Td (" Add alternative text) Tj ET
+BT /F1 12 Tf 72 462 Td (" Flag table headers) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000001209 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1279
+%%EOF

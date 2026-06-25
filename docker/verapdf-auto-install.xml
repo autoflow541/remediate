@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- IzPack automated-install descriptor for the veraPDF greenfield installer.
+     Installs the *nix command-line scripts to /opt/verapdf with no GUI.
+     NOTE: the veraPDF 1.26 IzPack installer requires Java 8/11 to run; it
+     throws ArrayIndexOutOfBoundsException under JDK 17+. The Docker image
+     therefore installs a Temurin 11 JRE. -->
+<AutomatedInstallation langpack="eng">
+  <com.izforge.izpack.panels.htmlhello.HTMLHelloPanel id="welcome"/>
+  <com.izforge.izpack.panels.target.TargetPanel id="install_dir">
+    <installpath>/opt/verapdf</installpath>
+  </com.izforge.izpack.panels.target.TargetPanel>
+  <com.izforge.izpack.panels.packs.PacksPanel id="sdk_pack_select"/>
+  <com.izforge.izpack.panels.install.InstallPanel id="install"/>
+  <com.izforge.izpack.panels.finish.FinishPanel id="finish"/>
+</AutomatedInstallation>

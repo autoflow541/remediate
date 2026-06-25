@@ -1,0 +1,14 @@
+# Convenience compose file for local runs.
+#   docker compose -f docker/docker-compose.yml up --build
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: remediation-engine
+    ports:
+      - "8000:8000"
+    environment:
+      # Lock CORS to the studio's dev origin in real deployments.
+      CORS_ORIGINS: "*"
+    restart: unless-stopped

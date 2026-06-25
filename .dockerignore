@@ -1,0 +1,13 @@
+# Build context is the repo root; keep the image lean.
+frontend/
+# Exclude docker/ except the veraPDF answer file, which the Dockerfile COPYs in.
+docker/*
+!docker/verapdf-auto-install.xml
+samples/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/node_modules/
+**/.git/
+**/.env
+*.md

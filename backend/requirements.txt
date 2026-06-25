@@ -1,0 +1,26 @@
+# --- Phase 1: /validate (veraPDF) ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20   # required by FastAPI for multipart/form-data uploads
+
+# --- Phase 2: /autotag (OpenDataLoader) ---
+# Apache-2.0. Thin Python wrapper around a bundled Java tool; needs Java 11+,
+# which the Docker image provides (Temurin 11 at $JAVA_HOME).
+opendataloader-pdf==2.4.7
+
+# --- Phase 3: /remediate write-back ---
+pikepdf==9.5.2             # MPL-2.0 structure-tree writer
+
+# --- Phase 5: Claude vision alt text ---
+anthropic>=0.40.0              # Claude API for auto-describing Figure images
+
+# --- Phase 4: /contrast + OCR fallback ---
+PyMuPDF>=1.24.0            # PDF rendering + text/color extraction for contrast check
+pytesseract>=0.3.13        # Tesseract OCR Python wrapper (fallback for scanned PDFs)
+Pillow>=10.0.0             # Required by pytesseract for image handling
+
+# --- Sprint 2: Language detection (WCAG 3.1.2) ---
+langdetect>=1.0.9          # Per-section language detection for /Lang attributes
+
+# Note: veraPDF is a Java tool installed in the Docker image (not a pip package).
+# Note: tesseract-ocr binary is installed in the Docker image via apt.
