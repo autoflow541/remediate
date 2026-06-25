@@ -294,19 +294,9 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     except Exception:
         manifest["source"]["langAnnotations"] = 0
 
-    # Detect and repair nested list structure (WCAG 1.3.1 / PDF/UA 7.7).
-    try:
-        from .fix_lists import fix_nested_lists
-        manifest = fix_nested_lists(manifest)
-    except Exception:
-        pass
+    
 
-    # Detect TOC blocks and re-tag as TOC/TOCI (PDF/UA clause 7.9).
-    try:
-        from .toc_detect import detect_toc
-        manifest = detect_toc(manifest)
-    except Exception:
-        pass
+    
 
     
 
