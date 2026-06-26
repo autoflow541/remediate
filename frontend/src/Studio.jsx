@@ -236,6 +236,7 @@ function UploadScreen({ onFile, error }) {
       {/* Hidden H1 focus target — announces page to screen readers on screen transition */}
       <h1 ref={headingRef} tabIndex={-1} className="sr-only">PDF Accessibility Remediation</h1>
       <p className="app-title" aria-hidden="true">PDF Accessibility Remediation</p>
+      <p className="app-subtitle"><a href="https://auto-flow.co" target="_blank" rel="noopener noreferrer">auto-flow.co</a></p>
 
       {/* Drop zone: visual drag target only — NOT in tab order. Button below is the keyboard entry point. */}
       <div
@@ -484,6 +485,10 @@ function PDFPreviewPanel({ pdfUrl, manifest }) {
         if (cancelled) return;
         // draw overlays + labels on same canvas
         const ctx = cvs.getContext("2d");
+        // Bboxes in the manifest are in PDF coordinate space (origin bottom-left,
+        // y increases upward) — the same space convertToViewportPoint expects.
+        // No Y-flip needed here; the backend normalises both heuristic (PyMuPDF)
+        // and ODL bboxes to PDF coords before writing the manifest.
         for (const node of nodesByPage[pn] || []) {
           const color = TAG_COLORS[node.tag];
           if (!color) continue;
@@ -862,6 +867,7 @@ function DoneScreen({ result, onReset }) {
   // Sprint 8
   const nontextContrastIssues = conformance?.nontextContrastIssues || [];
   const nontextContrastCount = conformance?.nontextContrastCount ?? 0;
+  const nontextContrastFixed = conformance?.nontextContrastFixed ?? 0;
   const targetSizeIssues = conformance?.targetSizeIssues || [];
   const xfaWarning = conformance?.xfaWarning || null;
   const fontIssues = conformance?.fontIssues || [];
@@ -994,10 +1000,11 @@ function DoneScreen({ result, onReset }) {
           </div>
         )}
 
-        {nontextContrastCount > 0 && (
+        {(nontextContrastCount > 0 || nontextContrastFixed > 0) && (
           <div className="contrast-warn" role="note">
             <strong><span aria-hidden="true">⚠ </span>{nontextContrastCount} non-text contrast issue{nontextContrastCount !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
-            <p>UI components or graphics below the 3:1 contrast ratio. Review and adjust colors in the source document.</p>
+            {nontextContrastFixed > 0 && <p>{nontextContrastFixed} auto-fixed (borders darkened / near-white fills cleared).</p>}
+            {nontextContrastCount > 0 && <p>Remaining issues require source-file correction.</p>}
           </div>
         )}
 
@@ -1131,14 +1138,21 @@ function DoneScreen({ result, onReset }) {
           </div>
         )}
 
-        {nontextContrastIssues.length > 0 && (
+        {(nontextContrastIssues.length > 0 || nontextContrastFixed > 0) && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{nontextContrastIssues.length} Non-text Contrast Issue{nontextContrastIssues.length !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
-            <p>UI component boundaries and graphical elements require a 3:1 contrast ratio against adjacent colors. These cannot be auto-fixed and require source correction.</p>
-            {nontextContrastIssues.slice(0, 2).map((n, i) => (
-              <div key={i} className="contrast-item">Page {n.page}: {n.description}</div>
-            ))}
-            {nontextContrastIssues.length > 2 && <div className="contrast-item">… and {nontextContrastIssues.length - 2} more (see audit report)</div>}
+            <strong><span aria-hidden="true">⚠ </span>Non-text Contrast (WCAG 1.4.11)</strong>
+            {nontextContrastFixed > 0 && (
+              <div className="contrast-item">✓ {nontextContrastFixed} auto-fixed — borders darkened, near-white fills cleared.</div>
+            )}
+            {nontextContrastIssues.length > 0 && (
+              <>
+                <p>{nontextContrastIssues.length} remaining issue{nontextContrastIssues.length !== 1 ? "s" : ""} require source-file correction.</p>
+                {nontextContrastIssues.slice(0, 2).map((n, i) => (
+                  <div key={i} className="contrast-item">Page {n.page}: {n.description}</div>
+                ))}
+                {nontextContrastIssues.length > 2 && <div className="contrast-item">… and {nontextContrastIssues.length - 2} more (see audit report)</div>}
+              </>
+            )}
           </div>
         )}
 

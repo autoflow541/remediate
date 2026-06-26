@@ -162,13 +162,14 @@ def _heuristic_autotag(pdf_path: str) -> dict:
         }
 
     all_sizes: list = []
-    pages_blocks: list = []
+    pages_blocks: list = []   # (page_num, blocks, page_height_pts)
     try:
         for page_num, page in enumerate(doc, start=1):
             try:
                 raw = page.get_text("rawdict", flags=0)
                 blocks = raw.get("blocks", []) or []
-                pages_blocks.append((page_num, blocks))
+                page_h = page.rect.height   # PyMuPDF device height for Y-flip
+                pages_blocks.append((page_num, blocks, page_h))
                 for block in blocks:
                     if block.get("type") != 0:
                         continue
@@ -178,7 +179,7 @@ def _heuristic_autotag(pdf_path: str) -> dict:
                             if sz > 0:
                                 all_sizes.append(sz)
             except Exception:
-                pages_blocks.append((page_num, []))
+                pages_blocks.append((page_num, [], 792.0))
     finally:
         doc.close()
 
@@ -189,52 +190,107 @@ def _heuristic_autotag(pdf_path: str) -> dict:
     else:
         body_size = 12.0
 
-    for page_num, blocks in pages_blocks:
+    def _line_is_bold_label(line, body_size):
+        """Return (is_bold_label, text, avg_size) for a single line."""
+        parts, sizes, bold, total = [], [], 0, 0
+        for span in line.get("spans", []) or []:
+            t = (span.get("text") or "").strip()
+            if t:
+                parts.append(t)
+            sz = span.get("size") or 0
+            if sz > 0:
+                sizes.append(sz)
+            if span.get("flags", 0) & 16:
+                bold += 1
+            total += 1
+        text = " ".join(parts).strip()
+        avg = sum(sizes) / len(sizes) if sizes else body_size
+        words = len(text.split())
+        is_label = (total > 0 and bold / total >= 0.6
+                    and words <= 6 and text and not text.endswith("."))
+        return is_label, text, avg
+
+    def _classify_tag(avg_size: float, body_size: float, is_label: bool) -> str:
+        ratio = avg_size / body_size if body_size else 1.0
+        if ratio >= 1.6:
+            return "H1"
+        if ratio >= 1.3:
+            return "H2"
+        if ratio >= 1.1:
+            return "H3"
+        if is_label:
+            return "H3"
+        return "P"
+
+    for page_num, blocks, page_h in pages_blocks:
         for block in blocks:
             if block.get("type") != 0:
                 continue
             lines = block.get("lines", []) or []
             if not lines:
                 continue
-            text_parts: list = []
-            sizes: list = []
-            bbox = block.get("bbox") or [0, 0, 0, 0]
-            for line in lines:
-                for span in line.get("spans", []) or []:
-                    t = (span.get("text") or "").strip()
-                    if t:
-                        text_parts.append(t)
-                    sz = span.get("size") or 0
-                    if sz > 0:
-                        sizes.append(sz)
-            text = " ".join(text_parts).strip()
-            if not text:
-                continue
-            avg_size = sum(sizes) / len(sizes) if sizes else body_size
-            ratio = avg_size / body_size if body_size else 1.0
 
-            if ratio >= 1.6:
-                tag = "H1"
-            elif ratio >= 1.3:
-                tag = "H2"
-            elif ratio >= 1.1:
-                tag = "H3"
-            else:
-                tag = "P"
+            # Split block at bold-label lines so "Instruction\nParagraph text..."
+            # becomes two nodes: H3("Instruction") + P("Paragraph text...")
+            segments: list[tuple[str, list, list]] = []  # (mode, lines_list, ...)
+            current_lines: list = []
+            current_mode = "body"
 
-            n += 1
-            nodes.append({
-                "id": "n" + str(n),
-                "tag": tag,
-                "page": page_num,
-                "text": text,
-                "bbox": list(bbox),
-                "source": {
-                    "type": tag.lower(),
-                    "fontSize": avg_size,
-                    "engine": "heuristic",
-                },
-            })
+            for i, line in enumerate(lines):
+                is_label, ltext, lsize = _line_is_bold_label(line, body_size)
+                if is_label and current_lines:
+                    # flush accumulated body lines
+                    segments.append(("body", current_lines))
+                    current_lines = []
+                if is_label:
+                    # emit heading as its own segment immediately
+                    segments.append(("label", [line]))
+                else:
+                    current_lines.append(line)
+            if current_lines:
+                segments.append(("body", current_lines))
+
+            raw_bbox = block.get("bbox") or [0, 0, 0, 0]
+            # Convert PyMuPDF device coords (origin top-left, y↓) to PDF coords
+            # (origin bottom-left, y↑) so the manifest is in a single consistent
+            # coordinate space that matches ODL output and writeback expectations.
+            # PyMuPDF: [x0, y0_top, x1, y1_bottom]  →  PDF: [x0, ph-y1, x1, ph-y0]
+            ph = page_h or 792.0
+            bbox = [raw_bbox[0], ph - raw_bbox[3], raw_bbox[2], ph - raw_bbox[1]]
+
+            for mode, seg_lines in segments:
+                text_parts, sizes, bold_spans, total_spans = [], [], 0, 0
+                for line in seg_lines:
+                    for span in line.get("spans", []) or []:
+                        t = (span.get("text") or "").strip()
+                        if t:
+                            text_parts.append(t)
+                        sz = span.get("size") or 0
+                        if sz > 0:
+                            sizes.append(sz)
+                        if span.get("flags", 0) & 16:
+                            bold_spans += 1
+                        total_spans += 1
+                text = " ".join(text_parts).strip()
+                if not text:
+                    continue
+                avg_size = sum(sizes) / len(sizes) if sizes else body_size
+                is_label = mode == "label"
+                tag = _classify_tag(avg_size, body_size, is_label)
+
+                n += 1
+                nodes.append({
+                    "id": "n" + str(n),
+                    "tag": tag,
+                    "page": page_num,
+                    "text": text,
+                    "bbox": list(bbox),   # PDF coords (y from bottom)
+                    "source": {
+                        "type": tag.lower(),
+                        "fontSize": avg_size,
+                        "engine": "heuristic",
+                    },
+                })
 
     return {
         "source": {

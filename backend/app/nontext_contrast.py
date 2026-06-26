@@ -62,8 +62,76 @@ def _int_color(color_val) -> tuple[int, int, int] | None:
     return None
 
 
+def _page_image_coverage(page) -> float:
+    """Return fraction of page area covered by raster images (0.0–1.0)."""
+    page_area = page.rect.width * page.rect.height
+    if page_area <= 0:
+        return 0.0
+    img_area = 0.0
+    try:
+        for img in page.get_images(full=True):
+            xref = img[0]
+            try:
+                for r in page.get_image_rects(xref):
+                    img_area += r.width * r.height
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return min(img_area / page_area, 1.0)
+
+
+def _is_decorative_path(path, page_width: float, page_height: float) -> bool:
+    """Return True when a vector path is almost certainly decorative (not informational).
+
+    Strips:
+      • Full-width/height separator rules (span ≥ 70 % of page dimension, height < 5pt)
+      • Closed rectangular frames — just a border box with no data content
+      • Paths whose stroke colour is nearly white (>240,240,240) — invisible ornament
+    Keeps:
+      • Any path that doesn't match the above — assumed informational until proven otherwise
+    """
+    rect = path.get("rect")
+    if not rect:
+        return False
+
+    w, h = rect.width, rect.height
+
+    # Full-width horizontal separator
+    if w >= page_width * 0.7 and h < 5:
+        return True
+    # Full-height vertical separator
+    if h >= page_height * 0.7 and w < 5:
+        return True
+
+    # Closed rectangular frame — items: move, 3 lines/curves, close
+    items = path.get("items") or []
+    if path.get("closePath") and len(items) <= 5 and w > 0 and h > 0:
+        # Aspect ratio close to a rectangle (not a tiny corner piece)
+        if min(w, h) > 5:
+            return True
+
+    # Near-white stroke — essentially invisible, purely ornamental
+    color = path.get("color")
+    if color:
+        try:
+            rgb = tuple(int(c * 255) for c in color[:3])
+            if all(v >= 230 for v in rgb):
+                return True
+        except Exception:
+            pass
+
+    return False
+
+
 def check_nontext_contrast(pdf_path: str, max_issues: int = 60) -> list[dict]:
-    """Return contrast issues for non-text UI components and graphical elements."""
+    """Return contrast issues for non-text UI components and graphical elements.
+
+    Relevance pass: decorative paths, full-page-width separators, closed border
+    frames, near-white strokes, and paths on image-heavy pages (>60 % raster
+    coverage, e.g. exported video-review PDFs) are stripped before reporting.
+    Only genuinely informational graphics that fail 3:1 are returned.
+    """
     try:
         import fitz
     except ImportError:
@@ -81,27 +149,30 @@ def check_nontext_contrast(pdf_path: str, max_issues: int = 60) -> list[dict]:
             if len(issues) >= max_issues:
                 break
             page_num = page_idx + 1
-            h = page.rect.height
+            pw = page.rect.width
+            ph = page.rect.height
+
+            # Relevance gate: skip graphic paths on image-heavy pages
+            # (screen-capture / video-review PDFs — the paths are UI chrome)
+            img_coverage = _page_image_coverage(page)
+            skip_graphics = img_coverage > 0.60
 
             # ── 1. Form field / annotation borders ─────────────────────────
             for annot in page.annots():
                 if len(issues) >= max_issues:
                     break
                 try:
-                    atype = annot.type[1]  # e.g. "Widget", "Link"
+                    atype = annot.type[1]
                     if atype not in ("Widget", "FreeText", "Square", "Circle"):
                         continue
                     rect = annot.rect
-                    cx = (rect.x0 + rect.x1) / 2
                     cy = (rect.y0 + rect.y1) / 2
 
-                    # Border colour from annotation appearance
                     colors = annot.colors
                     stroke = _int_color(colors.get("stroke"))
                     if not stroke:
                         continue
 
-                    # Sample background just outside the annotation
                     bg_x = max(0, rect.x0 - 6)
                     bg = _sample_bg(page, bg_x, cy)
                     if not bg:
@@ -124,7 +195,10 @@ def check_nontext_contrast(pdf_path: str, max_issues: int = 60) -> list[dict]:
                 except Exception:
                     continue
 
-            # ── 2. Thin vector paths (potential chart lines / icons) ────────
+            # ── 2. Thin vector paths — informational only ──────────────────
+            if skip_graphics:
+                continue  # entire page is image chrome — nothing to flag
+
             try:
                 paths = page.get_drawings()
                 for path in paths:
@@ -135,12 +209,15 @@ def check_nontext_contrast(pdf_path: str, max_issues: int = 60) -> list[dict]:
                         stroke = _int_color(path.get("color"))
                         if not stroke or width <= 0 or width > 3:
                             continue
-                        # Only flag paths that span > 10pt (not tiny dots)
                         rect = path.get("rect")
                         if not rect:
                             continue
                         span = max(rect.width, rect.height)
                         if span < 10:
+                            continue
+
+                        # Relevance filter — skip decorative paths
+                        if _is_decorative_path(path, pw, ph):
                             continue
 
                         cx = (rect.x0 + rect.x1) / 2

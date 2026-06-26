@@ -342,11 +342,18 @@ def remediate(
         except Exception:
             pass
 
-        # Step 11: WCAG 1.4.11 Non-text contrast
+        # Step 11: WCAG 1.4.11 Non-text contrast check + auto-fix
         nontext_contrast_issues: list = []
+        nontext_fixes_applied: int = 0
         try:
             from .nontext_contrast import check_nontext_contrast
             nontext_contrast_issues = check_nontext_contrast(out_path)
+            if nontext_contrast_issues:
+                from .contrast_fix import fix_nontext_contrast
+                nontext_fixes_applied, _ = fix_nontext_contrast(out_path, nontext_contrast_issues)
+                if nontext_fixes_applied:
+                    # Re-check after fixes — count should drop
+                    nontext_contrast_issues = check_nontext_contrast(out_path)
         except Exception:
             pass
 
@@ -566,6 +573,7 @@ def remediate(
         "nestedListsFixed": src.get("nestedListsFixed", 0),
         "nontextContrastIssues": nontext_contrast_issues,
         "nontextContrastCount": len(nontext_contrast_issues),
+        "nontextContrastFixed": nontext_fixes_applied,
         "targetSizeIssues": target_size_issues,
         "targetSizeCount": len(target_size_issues),
         "xfaWarning": xfa_warning,
