@@ -10,5 +10,13 @@ export default defineConfig({
     outDir: "dist",
     // pdf.js is large; keep it as its own chunk for caching.
     chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        // Stable filenames — no content-hash — so deploys never break
+        entryFileNames: "studio.js",
+        chunkFileNames: "studio-[name].js",
+        assetFileNames: "assets/[name][extname]",
+      },
+    },
   },
 });

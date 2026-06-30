@@ -99,7 +99,7 @@ def _bbox_area(b: list[float]) -> float:
     return abs((b[2] - b[0]) * (b[3] - b[1]))
 
 
-def _contains(b: list[float], x: float, y: float, tol: float = 1.0) -> bool:
+def _contains(b: list[float], x: float, y: float, tol: float = 4.0) -> bool:
     return (b[0] - tol) <= x <= (b[2] + tol) and (b[1] - tol) <= y <= (b[3] + tol)
 
 

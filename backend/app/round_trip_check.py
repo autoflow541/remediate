@@ -31,25 +31,41 @@ _HEADING_TAGS = {"H", "H1", "H2", "H3", "H4", "H5", "H6"}
 
 
 def _walk_struct(elem, callback) -> None:
-    """Walk a pikepdf struct tree element recursively, calling callback on each."""
+    """Walk a pikepdf struct tree element recursively, calling callback on each.
+
+    Compatible with pikepdf 10.x where calling get_object() on an Array raises
+    ValueError (pikepdf treats it as a dictionary key lookup). We iterate
+    directly over Array instances and use .obj for indirect references.
+    """
     try:
-        if not hasattr(elem, "keys"):
+        if not hasattr(elem, "get"):
             return
         callback(elem)
-        kids = elem.get("/K")
+        import pikepdf
+        try:
+            kids = elem.get("/K")
+        except Exception:
+            return
         if kids is None:
             return
-        import pikepdf
-        obj = kids.get_object() if hasattr(kids, "get_object") else kids
-        if isinstance(obj, pikepdf.Array):
-            for k in obj:
+        if isinstance(kids, pikepdf.Array):
+            for k in kids:
                 try:
-                    child = k.get_object() if hasattr(k, "get_object") else k
-                    _walk_struct(child, callback)
+                    child = k.obj if hasattr(k, "obj") else k
+                    if hasattr(child, "get"):
+                        _walk_struct(child, callback)
                 except Exception:
                     pass
+        elif isinstance(kids, pikepdf.Dictionary):
+            _walk_struct(kids, callback)
         else:
-            _walk_struct(obj, callback)
+            # Single indirect reference (not Array, not Dictionary) — resolve via .obj
+            try:
+                child = kids.obj if hasattr(kids, "obj") else kids
+                if hasattr(child, "get"):
+                    _walk_struct(child, callback)
+            except Exception:
+                pass
     except Exception:
         pass
 

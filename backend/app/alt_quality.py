@@ -93,7 +93,7 @@ def _check_struct_node(obj, page_map: dict, issues: list[dict], _depth: int = 0)
                     "type": "generic",
                     "alt": alt_str[:120],
                     "page": page_num,
-                    "description": f"Figure alt text is non-descriptive: "{alt_str[:60]}"",
+                    "description": f'Figure alt text is non-descriptive: "{alt_str[:60]}"',
                 }
 
         if issue is not None:

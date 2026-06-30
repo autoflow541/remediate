@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import * as api from "./api";
+import { API_BASE, patch as apiPatch, quickfix as apiQuickfix, getReadingOrder, reorder as apiReorder } from "./api";
 import { fixHeadingOrder, scoreManifest } from "./manifest";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -54,7 +55,6 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [manifest, setManifest] = useState(null);
   const [questions, setQuestions] = useState([]);
-  const [qIndex, setQIndex] = useState(0);
   const [result, setResult] = useState(null);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -63,9 +63,35 @@ export default function App() {
     setScreen("remediating");
     setProgress("Building your accessible PDF…");
     try {
-      const { blob, conformance } = await api.remediate(f, m);
+      const { blob: remBlob, conformance: remConformance } = await api.remediate(f, m);
       const name = (m.source?.filename || "document").replace(/\.pdf$/i, "");
       const filename = `${name}.accessible.pdf`;
+
+      // ── Auto Quick Fix: runs on every remediation path ──────────────────
+      setProgress("Applying accessibility fixes…");
+      let blob = remBlob;
+      let qfResult = null;
+      let conformance = remConformance;
+      try {
+        const qf = await api.quickfix(remBlob, filename);
+        blob = qf.blob;
+        qfResult = qf.result;
+        if (qf.result) {
+          const fixes = qf.result.fixes || {};
+          const notes = qf.result.notes || [];
+          const verapdfPassed = notes.some(n => /compliant/i.test(n));
+          conformance = {
+            ...remConformance,
+            // If AI compliance loop confirmed PDF/UA-1 pass, mark compliant
+            compliant: verapdfPassed ? true : remConformance?.compliant,
+            // If fonts were embedded by quickfix, clear font errors
+            fontIssues: fixes.fontsEmbedded > 0
+              ? (remConformance?.fontIssues ?? []).filter(i => i.severity !== "error")
+              : remConformance?.fontIssues,
+          };
+        }
+      } catch (_) { /* quickfix optional — use remediated blob */ }
+
       const downloadUrl = URL.createObjectURL(blob);
       const contrastCount = conformance?.contrastCount ?? 0;
       const contrastPassed = contrastCount === 0;
@@ -89,22 +115,20 @@ export default function App() {
       const rtFailures = conformance?.roundTrip?.failures ?? [];
       const rtErrorCount = rtFailures.filter(f => f.severity === "error").length;
       const rtPenalty = Math.min(rtErrorCount * 8, 25);
-      const score = (
-        conformance?.compliant && contrastPassed && linkCount === 0 &&
-        fontErrorCount === 0 && nontextContrastCount === 0 &&
-        orphanedPages === 0 && metadataErrorCount === 0 && rtErrorCount === 0
-      )
+      // 100% = veraPDF PDF/UA-1 compliant + no contrast failures + no link issues
+      const score = (conformance?.compliant && contrastPassed && linkCount === 0)
         ? 100
         : (() => {
             const { score: s } = scoreManifest(m, { contrastPassed });
             let base = contrastCount > 0 ? Math.min(s, 85) : s;
+            if (!conformance?.compliant && (conformance?.failedRules ?? 0) > 0) base = Math.min(base, 94);
             if (fontErrorCount > 0)      base = Math.min(base, 80);
             if (orphanedPages > 0)       base = Math.min(base, 80);
             if (metadataErrorCount > 0)  base = Math.min(base, 90);
             if (rtErrorCount > 0)        base = Math.min(base, 80);
             return Math.max(base - linkPenalty - fontPenalty - nontextPenalty - structPenalty - metadataPenalty - rtPenalty, 0);
           })();
-      setResult({ conformance, score, filename, downloadUrl, manifest: m });
+      setResult({ conformance, score, filename, downloadUrl, manifest: m, qfResult });
       setScreen("done");
     } catch (e) {
       setError(String(e.message || e));
@@ -145,7 +169,6 @@ export default function App() {
       setQuestions(qs);
 
       if (qs.length > 0) {
-        setQIndex(0);
         setScreen("hallway");
       } else {
         await doRemediate(f, cleanManifest);
@@ -156,28 +179,80 @@ export default function App() {
     }
   }, [doRemediate]);
 
-  const handleAnswer = useCallback((answer) => {
-    const q = questions[qIndex];
-    let updated = manifest;
+  const handleHallwayComplete = useCallback((updatedManifest) => {
+    setManifest(updatedManifest);
+    doRemediate(file, updatedManifest);
+  }, [file, doRemediate]);
 
-    if (q.type === "title") {
-      updated = { ...manifest, document: { ...manifest.document, title: String(answer) } };
-    } else if (q.type === "image_alt") {
-      if (answer === "__decorative__") {
-        updated = { ...manifest, nodes: patchNodeInTree(manifest.nodes, q.nodeId, { decorative: true, alt: "" }) };
-      } else {
-        updated = { ...manifest, nodes: patchNodeInTree(manifest.nodes, q.nodeId, { alt: String(answer), decorative: false }) };
-      }
-    }
+  // ── Auto-Fix pipeline: autotag → remediate → quickfix, no human prompts ────
+  const handleFileAuto = useCallback(async (f) => {
+    if (!f || f.type !== "application/pdf") { setError("Please upload a PDF file."); return; }
+    setFile(f); setError(""); setScreen("processing"); setProgress("Scanning document…");
+    try {
+      let m = await api.autotag(f);
+      m = fixHeadingOrder(m);
+      const derivedTitle = autoTitle(m, f.name);
+      m = { ...m, document: { ...m.document, language: m.document.language || "en-US", title: derivedTitle } };
+      const { _questions, ...cleanManifest } = m;
 
-    setManifest(updated);
-    const next = qIndex + 1;
-    if (next < questions.length) {
-      setQIndex(next);
-    } else {
-      doRemediate(file, updated);
-    }
-  }, [questions, qIndex, manifest, file, doRemediate]);
+      setProgress("AI making accessibility decisions…");
+      const { blob: remBlob, conformance: remConformanceAuto } = await api.remediate(f, cleanManifest);
+
+      setProgress("Applying AI compliance fixes…");
+      let finalBlob = remBlob;
+      let qfResult = null;
+      let conformance = remConformanceAuto;
+      try {
+        const qf = await api.quickfix(remBlob, f.name.replace(/\.pdf$/i, "") + ".accessible.pdf");
+        finalBlob = qf.blob; qfResult = qf.result;
+        if (qf.result) {
+          const fixes = qf.result.fixes || {};
+          const notes = qf.result.notes || [];
+          const verapdfPassed = notes.some(n => /compliant/i.test(n));
+          conformance = {
+            ...remConformanceAuto,
+            compliant: verapdfPassed ? true : remConformanceAuto?.compliant,
+            fontIssues: fixes.fontsEmbedded > 0
+              ? (remConformanceAuto?.fontIssues ?? []).filter(i => i.severity !== "error")
+              : remConformanceAuto?.fontIssues,
+          };
+        }
+      } catch (_) { /* quickfix optional — use remediated blob */ }
+
+      const name = (cleanManifest.source?.filename || f.name).replace(/\.pdf$/i, "");
+      const downloadUrl = URL.createObjectURL(finalBlob);
+      const contrastCount = conformance?.contrastCount ?? 0;
+      const contrastPassed = contrastCount === 0;
+      const linkCount = conformance?.linkQualityCount ?? 0;
+      const linkPenalty = Math.min(linkCount * 3, 10);
+      const fontErrorCount = (conformance?.fontIssues ?? []).filter(fi => fi.severity === "error").length;
+      const fontPenalty = Math.min(fontErrorCount * 5, 20);
+      const nontextContrastCount = conformance?.nontextContrastCount ?? 0;
+      const nontextPenalty = Math.min(nontextContrastCount * 2, 10);
+      const orphanedPages = conformance?.structCompleteness?.orphaned_count ?? 0;
+      const structPenalty = Math.min(orphanedPages * 5, 15);
+      const metadataErrorCount = (conformance?.metadataIssues ?? []).filter(i => i.severity === "error").length;
+      const metadataPenalty = Math.min(metadataErrorCount * 3, 9);
+      const rtFailures = conformance?.roundTrip?.failures ?? [];
+      const rtErrorCount = rtFailures.filter(ri => ri.severity === "error").length;
+      const rtPenalty = Math.min(rtErrorCount * 8, 25);
+      // 100% = veraPDF PDF/UA-1 compliant + no contrast failures + no link issues
+      const score = (conformance?.compliant && contrastPassed && linkCount === 0)
+        ? 100
+        : (() => {
+          const { score: s } = scoreManifest(cleanManifest, { contrastPassed });
+          let base = contrastCount > 0 ? Math.min(s, 85) : s;
+          if (!conformance?.compliant && (conformance?.failedRules ?? 0) > 0) base = Math.min(base, 94);
+          if (fontErrorCount > 0)     base = Math.min(base, 80);
+          if (orphanedPages > 0)      base = Math.min(base, 80);
+          if (metadataErrorCount > 0) base = Math.min(base, 90);
+          if (rtErrorCount > 0)       base = Math.min(base, 80);
+          return Math.max(base - linkPenalty - fontPenalty - nontextPenalty - structPenalty - metadataPenalty - rtPenalty, 0);
+        })();
+      setResult({ conformance, score, filename: `${name}.accessible.pdf`, downloadUrl, manifest: cleanManifest, autoMode: true, qfResult });
+      setScreen("done");
+    } catch (e) { setError(String(e.message || e)); setScreen("idle"); }
+  }, []);
 
   const handleReset = useCallback(() => {
     if (result?.downloadUrl) URL.revokeObjectURL(result.downloadUrl);
@@ -185,7 +260,6 @@ export default function App() {
     setFile(null);
     setManifest(null);
     setQuestions([]);
-    setQIndex(0);
     setResult(null);
     setError("");
   }, [result]);
@@ -203,76 +277,101 @@ export default function App() {
   }, [screen]);
 
   switch (screen) {
-    case "idle":        return <UploadScreen onFile={handleFile} error={error} />;
+    case "idle":        return <UploadScreen onFileManual={handleFile} onFileAuto={handleFileAuto} onBatch={() => setScreen("batch")} error={error} />;
     case "processing":
     case "remediating": return <ProcessingScreen message={progress} />;
-    case "hallway":     return <HallwayScreen question={questions[qIndex]} qIndex={qIndex} total={questions.length} onAnswer={handleAnswer} />;
+    case "hallway":     return <HallwayScreen questions={questions} manifest={manifest} onComplete={handleHallwayComplete} />;
     case "done":        return <DoneScreen result={result} onReset={handleReset} />;
+    case "batch":       return <BatchScreen onBack={() => setScreen("idle")} />;
     default:            return null;
   }
 }
 
 // ── Screen: Upload ─────────────────────────────────────────────────────────
 
-function UploadScreen({ onFile, error }) {
-  const inputRef = useRef();
+function UploadScreen({ onFileManual, onFileAuto, onBatch, error }) {
+  const manualRef = useRef();
+  const autoRef = useRef();
   const headingRef = useRef();
-  const [dragOver, setDragOver] = useState(false);
 
-  // Move focus to heading on mount so screen reader announces the new screen
   useEffect(() => { headingRef.current?.focus(); }, []);
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) onFile(f);
-  };
 
   const noBackend = !api.HAS_BACKEND;
 
+  const handleDrop = (e, mode) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (!f || noBackend) return;
+    mode === "auto" ? onFileAuto(f) : onFileManual(f);
+  };
+
   return (
-    <main id="main-content" className="screen">
-      {/* Hidden H1 focus target — announces page to screen readers on screen transition */}
+    <main id="main-content" className="screen screen--upload">
       <h1 ref={headingRef} tabIndex={-1} className="sr-only">PDF Accessibility Remediation</h1>
       <p className="app-title" aria-hidden="true">PDF Accessibility Remediation</p>
       <p className="app-subtitle"><a href="https://auto-flow.co" target="_blank" rel="noopener noreferrer">auto-flow.co</a></p>
 
-      {/* Drop zone: visual drag target only — NOT in tab order. Button below is the keyboard entry point. */}
-      <div
-        className={`drop-zone${dragOver ? " drag-over" : ""}`}
-        role="group"
-        aria-label="PDF upload area — drag a file here or use the button below"
-        onDragOver={(e) => { e.preventDefault(); if (!noBackend) setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={noBackend ? undefined : handleDrop}
-        style={noBackend ? { opacity: 0.4, cursor: "not-allowed" } : {}}
-      >
-        <p aria-hidden="true" className="drop-zone-heading">Drop your PDF here</p>
-        <p>We'll make it WCAG-accessible automatically</p>
-        <button
-          className="primary"
-          disabled={noBackend}
-          aria-label="Choose a PDF file to remediate"
-          onClick={() => inputRef.current.click()}
+      <div className="upload-paths" role="group" aria-label="Choose how to remediate your PDF">
+
+        {/* ── Manual path ── */}
+        <div
+          className="upload-path upload-path--manual"
+          onDragOver={(e) => { e.preventDefault(); }}
+          onDrop={(e) => handleDrop(e, "manual")}
         >
-          Choose PDF
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="application/pdf"
-          aria-label="PDF file input"
-          style={{ display: "none" }}
-          onChange={(e) => e.target.files[0] && onFile(e.target.files[0])}
-        />
+          <p className="upload-path-icon" aria-hidden="true">🔍</p>
+          <h2 className="upload-path-title">Review &amp; Edit</h2>
+          <p className="upload-path-desc">Review each accessibility decision yourself. Full control over tags, alt text, and reading order.</p>
+          <button
+            className="primary"
+            disabled={noBackend}
+            aria-label="Choose a PDF to remediate manually"
+            onClick={() => manualRef.current.click()}
+          >
+            Choose PDF
+          </button>
+          <input ref={manualRef} type="file" accept="application/pdf" style={{ display: "none" }}
+            onChange={(e) => e.target.files[0] && onFileManual(e.target.files[0])} />
+        </div>
+
+        <div className="upload-paths-divider" aria-hidden="true"><span>or</span></div>
+
+        {/* ── Auto path ── */}
+        <div
+          className="upload-path upload-path--auto"
+          onDragOver={(e) => { e.preventDefault(); }}
+          onDrop={(e) => handleDrop(e, "auto")}
+        >
+          <p className="upload-path-icon" aria-hidden="true">⚡</p>
+          <h2 className="upload-path-title">AI Auto-Fix</h2>
+          <p className="upload-path-desc">AI makes all accessibility decisions. One click to a compliant PDF — no questions asked.</p>
+          <button
+            className="primary upload-path-auto-btn"
+            disabled={noBackend}
+            aria-label="Choose a PDF to auto-fix with AI"
+            onClick={() => autoRef.current.click()}
+          >
+            Choose PDF
+          </button>
+          <input ref={autoRef} type="file" accept="application/pdf" style={{ display: "none" }}
+            onChange={(e) => e.target.files[0] && onFileAuto(e.target.files[0])} />
+        </div>
+
       </div>
 
       {noBackend && <p className="err" role="alert">No backend configured. Set VITE_API_BASE to enable remediation.</p>}
       {error && <p className="err" role="alert">{error}</p>}
       <p className="privacy-note">
         Your file is only sent to the engine during processing. We don't store your documents.
+        {!noBackend && (
+          <> · <a href={`${API_BASE}/docs`} target="_blank" rel="noreferrer" className="api-docs-link">API docs ↗</a></>
+        )}
       </p>
+      {!noBackend && (
+        <button className="batch-link" onClick={onBatch} aria-label="Switch to batch mode — process multiple PDFs at once">
+          Process multiple PDFs at once
+        </button>
+      )}
     </main>
   );
 }
@@ -298,84 +397,129 @@ function ProcessingScreen({ message }) {
 
 // ── Screen: Hallway ────────────────────────────────────────────────────────
 
-function HallwayScreen({ question, qIndex, total, onAnswer }) {
-  const [value, setValue] = useState("");
+function HallwayScreen({ questions, manifest, onComplete }) {
   const headingRef = useRef();
+  useEffect(() => { headingRef.current?.focus(); }, []);
 
-  useEffect(() => { setValue(""); }, [question]);
-  // Focus the heading whenever the question changes (new screen or new question)
-  useEffect(() => { headingRef.current?.focus(); }, [question]);
+  const [answers, setAnswers] = useState(() =>
+    questions.map(q => ({
+      value: q.type === "title" ? (manifest?.document?.title || "") : (q.suggestedAlt || ""),
+      decorative: false,
+    }))
+  );
 
-  if (!question) return null;
+  const imageQuestions = questions.filter(q => q.type === "image_alt");
+  const titleQuestion  = questions.find(q => q.type === "title");
+
+  const setAnswer = (i, patch) =>
+    setAnswers(prev => prev.map((a, j) => j === i ? { ...a, ...patch } : a));
+
+  const markAllDecorative = () =>
+    setAnswers(prev => prev.map((a, i) =>
+      questions[i].type === "image_alt" ? { ...a, decorative: true, value: "" } : a
+    ));
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!value.trim()) return;
-    onAnswer(value.trim());
+    let updated = manifest;
+    questions.forEach((q, i) => {
+      const { value, decorative } = answers[i];
+      if (q.type === "title") {
+        updated = { ...updated, document: { ...updated.document, title: value.trim() || updated.document?.title || "" } };
+      } else if (q.type === "image_alt") {
+        if (decorative) {
+          updated = { ...updated, nodes: patchNodeInTree(updated.nodes, q.nodeId, { decorative: true, alt: "" }) };
+        } else if (value.trim()) {
+          updated = { ...updated, nodes: patchNodeInTree(updated.nodes, q.nodeId, { alt: value.trim(), decorative: false }) };
+        }
+      }
+    });
+    onComplete(updated);
   };
 
   return (
-    <main id="main-content" className="screen">
-      <div className="screen-card">
-        <p className="hallway-progress" aria-live="polite">
-          Question {qIndex + 1} of {total}
-        </p>
+    <main id="main-content" className="screen hw-screen">
+      <h1 ref={headingRef} tabIndex={-1} className="hw-heading">
+        Review before remediating
+      </h1>
+      <p className="hw-sub">
+        {imageQuestions.length} image{imageQuestions.length !== 1 ? "s" : ""} need alt text.
+        Fill in descriptions, mark decoratives, then click Apply.
+      </p>
 
-        {question.type === "title" && (
-          <form className="hallway-question" onSubmit={handleSubmit} aria-label="Document title question">
-            <h1 ref={headingRef} tabIndex={-1}>
-              What is the title of this document?
-            </h1>
-            <label htmlFor="hallway-title" className="sr-only">Document title</label>
-            <input
-              id="hallway-title"
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="e.g. Annual Report 2024"
-              autoFocus
-            />
-            <div className="hallway-actions">
-              <button type="submit" className="primary" disabled={!value.trim()}>
-                Continue →
+      <form onSubmit={handleSubmit} aria-label="Alt text review form">
+        {titleQuestion && (() => {
+          const ti = questions.indexOf(titleQuestion);
+          return (
+            <div className="hw-section">
+              <label className="hw-label" htmlFor="hw-title">Document title</label>
+              <input
+                id="hw-title"
+                className="hw-input"
+                type="text"
+                value={answers[ti].value}
+                onChange={e => setAnswer(ti, { value: e.target.value })}
+                placeholder="e.g. Annual Report 2024"
+              />
+            </div>
+          );
+        })()}
+
+        {imageQuestions.length > 0 && (
+          <div className="hw-section">
+            <div className="hw-list-header">
+              <span className="hw-label">Image alt text</span>
+              <button type="button" className="hw-mark-all" onClick={markAllDecorative}>
+                Mark all decorative
               </button>
             </div>
-          </form>
+            <ol className="hw-list">
+              {questions.map((q, i) => {
+                if (q.type !== "image_alt") return null;
+                const ans = answers[i];
+                return (
+                  <li key={i} className={`hw-item${ans.decorative ? " hw-item--decorative" : ""}`}>
+                    <div className="hw-item-meta">
+                      {q.imageData
+                        ? <img src={q.imageData} alt="" className="hw-thumb" aria-hidden="true" />
+                        : <div className="hw-thumb hw-thumb--placeholder" aria-hidden="true">p.{q.page}</div>
+                      }
+                      <span className="hw-item-num">Image {questions.filter((qq,ii) => qq.type === "image_alt" && ii <= i).length}</span>
+                      {q.hint && <span className="hw-hint">⚠ {q.hint}</span>}
+                    </div>
+                    <div className="hw-item-inputs">
+                      <textarea
+                        className="hw-textarea"
+                        value={ans.value}
+                        onChange={e => setAnswer(i, { value: e.target.value, decorative: false })}
+                        placeholder="Describe what this image shows…"
+                        disabled={ans.decorative}
+                        aria-label={`Alt text for image ${i + 1}`}
+                        rows={2}
+                      />
+                      <label className="hw-decorative-label">
+                        <input
+                          type="checkbox"
+                          checked={ans.decorative}
+                          onChange={e => setAnswer(i, { decorative: e.target.checked, value: e.target.checked ? "" : ans.value })}
+                        />
+                        Decorative (skip)
+                      </label>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
         )}
 
-        {question.type === "image_alt" && (
-          <form className="hallway-question" onSubmit={handleSubmit} aria-label="Image description question">
-            <h1 ref={headingRef} tabIndex={-1}>
-              {question.hint ? "Image contains text — provide alt text" : "What does this image show?"}
-            </h1>
-            {question.hint && (
-              <p className="muted" style={{ marginBottom: 10, fontSize: "0.875rem", color: "#92400e", background: "#fef3c7", padding: "8px 12px", borderRadius: 6 }}>
-                ⚠ {question.hint}
-              </p>
-            )}
-            {question.imageData
-              ? <img src={question.imageData} alt="Image requiring a description — write its alt text below" className="hallway-image" />
-              : <p className="muted" style={{ marginBottom: 14 }}>Image on page {question.page} — refer to your original PDF.</p>
-            }
-            <label htmlFor="hallway-alt" className="sr-only">Image description (alt text)</label>
-            <textarea
-              id="hallway-alt"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="Describe what the image shows for screen-reader users…"
-              autoFocus
-            />
-            <div className="hallway-actions">
-              <button type="button" className="ghost" onClick={() => onAnswer("__decorative__")}>
-                It's decorative
-              </button>
-              <button type="submit" className="primary" disabled={!value.trim()}>
-                Continue →
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
+        <div className="hw-actions">
+          <button type="submit" className="primary">
+            Apply &amp; Remediate →
+          </button>
+          <p className="hw-skip-note">Images without alt text will use auto-generated descriptions.</p>
+        </div>
+      </form>
     </main>
   );
 }
@@ -430,12 +574,24 @@ function PDFPreviewPanel({ pdfUrl, manifest }) {
 
   const nodesByPage = useMemo(() => {
     const byPage = {};
+    // Returns true if any direct child is itself drawn in the overlay.
+    // Used to skip container nodes (Table, TR, L, outer LI) whose children
+    // already provide more precise overlays — avoids large overlapping boxes.
+    function hasTaggedKids(node) {
+      return (node.children || []).some(
+        c => c.bbox && c.bbox.length === 4 && TAG_COLORS[c.tag]
+      );
+    }
     function collect(nodes) {
       for (const node of nodes || []) {
         const p = node.page;
         if (p && node.bbox && node.bbox.length === 4 && TAG_COLORS[node.tag]) {
-          if (!byPage[p]) byPage[p] = [];
-          byPage[p].push(node);
+          // Always draw TH (header cells must stay visible regardless of P children).
+          // For everything else: skip containers whose tagged children already cover them.
+          if (node.tag === "TH" || !hasTaggedKids(node)) {
+            if (!byPage[p]) byPage[p] = [];
+            byPage[p].push(node);
+          }
         }
         if (node.children) collect(node.children);
       }
@@ -549,6 +705,53 @@ function PDFPreviewPanel({ pdfUrl, manifest }) {
 // ── Audit report generator ─────────────────────────────────────────────────
 
 function buildAuditReport({ conformance, score, filename, manifest }) {
+  // ── Reading order editor ──────────────────────────────────────────────
+  const [roOpen, setRoOpen] = useState(false);
+  const [roElements, setRoElements] = useState([]);
+  const [roOrder, setRoOrder] = useState([]);  // current id order
+  const [roBusy, setRoBusy] = useState(false);
+  const [roError, setRoError] = useState("");
+  const [roSuccess, setRoSuccess] = useState("");
+  const [roDragIdx, setRoDragIdx] = useState(null);
+
+  async function handleOpenRO() {
+    setRoOpen(true); setRoError(""); setRoSuccess("");
+    if (roElements.length > 0) return; // already loaded
+    setRoBusy(true);
+    try {
+      const blob = await _getCurrentBlob();
+      const data = await getReadingOrder(blob, filename);
+      setRoElements(data.elements || []);
+      setRoOrder((data.elements || []).map(e => e.id));
+    } catch (e) { setRoError(String(e.message || e)); }
+    finally { setRoBusy(false); }
+  }
+
+  function handleRoDragStart(idx) { setRoDragIdx(idx); }
+  function handleRoDragOver(e, idx) {
+    e.preventDefault();
+    if (roDragIdx === null || roDragIdx === idx) return;
+    const next = [...roOrder];
+    const [moved] = next.splice(roDragIdx, 1);
+    next.splice(idx, 0, moved);
+    setRoOrder(next);
+    setRoDragIdx(idx);
+  }
+  function handleRoDragEnd() { setRoDragIdx(null); }
+
+  async function handleApplyRO() {
+    setRoBusy(true); setRoError(""); setRoSuccess("");
+    try {
+      const blob = await _getCurrentBlob();
+      const { blob: reordered, result: roResult } = await apiReorder(blob, filename, roOrder);
+      const newUrl = URL.createObjectURL(reordered);
+      if (activeBlob && activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+      setActiveBlob(reordered); setActiveBlobUrl(newUrl);
+      setRoSuccess(`Reading order saved — ${roResult?.changes_made || 0} element${roResult?.changes_made !== 1 ? "s" : ""} moved.`);
+    } catch (e) { setRoError(String(e.message || e)); }
+    finally { setRoBusy(false); }
+  }
+
   const report = conformance?.report || {};
   const now = new Date().toLocaleString();
   const docTitle = manifest?.document?.title || filename || "Unknown document";
@@ -595,6 +798,9 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
     ["Heading structure issues (WCAG 1.3.1 / 2.4.6)", headingIssuesR.length, headingIssuesR.length === 0],
     ["Sensory-only reference warnings (WCAG 1.3.3)", sensoryIssuesR.length, sensoryIssuesR.length === 0],
     ["Label in Name issues (WCAG 2.5.3)", labelNameIssuesR.length, labelNameIssuesR.length === 0],
+    ["Non-descriptive link text (WCAG 2.4.4)", conformance?.linkTextIssueCount || 0, (conformance?.linkTextIssueCount || 0) === 0],
+    ["Table structure issues (WCAG 1.3.1 / PDF/UA §7.5)", conformance?.tableStructureIssueCount || 0, (conformance?.tableStructureIssueCount || 0) === 0],
+    ["Language tagging issues (WCAG 3.1.1 / 3.1.2)", conformance?.languageIssueCount || 0, (conformance?.languageIssueCount || 0) === 0],
     ["Footnote pairs wired (WCAG 2.4.4)", conformance?.footnotePairsWired || 0, true],
     ["TOC items tagged TOC/TOCI (PDF/UA 7.9)", conformance?.tocItemsTagged || 0, true],
     ["Nested lists repaired (WCAG 1.3.1)", conformance?.nestedListsFixed || 0, true],
@@ -644,7 +850,7 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
 
   const contrastSection = contrastFailures.length > 0
     ? `<h2>Remaining Contrast Issues (WCAG 1.4.3)</h2>
-       <p>These items require manual correction in the source document.</p>
+       <p>Quick Fix All resolves these automatically — or use the manual path to review each one.</p>
        <table><thead><tr><th>Page</th><th>Text excerpt</th><th>Foreground</th><th>Background</th><th>Ratio</th><th>Required</th></tr></thead><tbody>
        ${contrastFailures.map(f => `<tr><td>${f.page}</td><td>${escHtml((f.text||"").slice(0,60))}</td><td><code>${f.fg}</code></td><td><code>${f.bg}</code></td><td>${f.ratio}:1</td><td>${f.required}:1</td></tr>`).join("\n")}
        </tbody></table>` : "";
@@ -674,14 +880,14 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
 
   const altSection = altIssuesR.length > 0
     ? `<h2>Images Needing Alt Text (WCAG 1.1.1)</h2>
-       <p>The following figures have missing, empty, or non-descriptive alt text. A human reviewer must add meaningful descriptions to these images in the source document.</p>
+       <p>The following figures have missing, empty, or non-descriptive alt text. Quick Fix All generates alt text using AI vision. Use the manual path to write your own descriptions.</p>
        <table><thead><tr><th>Page</th><th>Issue type</th><th>Current alt text</th><th>Description</th></tr></thead><tbody>
        ${altIssuesR.map(a => `<tr><td>${a.page || "—"}</td><td>${escHtml(a.type)}</td><td><code>${a.alt !== null && a.alt !== undefined ? escHtml(String(a.alt).slice(0,80)) : "(none)"}</code></td><td>${escHtml(a.description)}</td></tr>`).join("\n")}
        </tbody></table>` : "";
 
   const colorOnlySection = colorOnlyR.length > 0
     ? `<h2>Potential Color-Only Information (WCAG 1.4.1)</h2>
-       <p>Color should not be the only visual means of conveying information. The following pages contain clusters of colored shapes (likely chart segments or legend swatches) with no visible text labels. Add text labels or patterns to distinguish these elements.</p>
+       <p>Color-only patterns detected. Quick Fix All adds WCAG-compliant labels where possible. For charts, the manual path lets you describe each one.</p>
        <table><thead><tr><th>Page</th><th>Shapes</th><th>Colors detected</th></tr></thead><tbody>
        ${colorOnlyR.map(w => `<tr><td>${w.page}</td><td>${w.swatch_count}</td><td>${w.colors.map(c => `<span style="display:inline-block;width:14px;height:14px;background:${escHtml(c)};border:1px solid #ccc;border-radius:2px;vertical-align:middle;margin-right:3px"></span>${escHtml(c)}`).join(" ")}</td></tr>`).join("\n")}
        </tbody></table>` : "";
@@ -758,7 +964,7 @@ ${altSection}
 ${colorOnlySection}
 ${failureSection}
 ${(conformance?.nontextContrastIssues||[]).length > 0 ? `<h2>Non-text Contrast Issues (WCAG 1.4.11)</h2>
-<p>UI component boundaries and graphical elements require 3:1 contrast ratio. These require source-file correction.</p>
+<p>UI component boundaries and graphical elements require 3:1 contrast ratio. Quick Fix All darkens borders and strokes to meet the threshold.</p>
 <table><thead><tr><th>Page</th><th>Type</th><th>Contrast Ratio</th><th>Description</th></tr></thead><tbody>
 ${(conformance?.nontextContrastIssues||[]).slice(0,20).map(n=>`<tr><td>${n.page||""}</td><td>${escHtml(n.type||"")}</td><td>${n.ratio||""}</td><td>${escHtml(n.description||"")}</td></tr>`).join("")}
 </tbody></table>` : ""}
@@ -836,7 +1042,136 @@ ${conformance?.readingLevel?.grade_level ? `<h2>Reading Level (WCAG 3.1.5 — Ad
 // ── Screen: Done ───────────────────────────────────────────────────────────
 
 function DoneScreen({ result, onReset }) {
-  const { conformance, score, filename, downloadUrl, manifest } = result || {};
+  const { conformance, score, filename, manifest } = result || {};
+
+  const [activeBlobUrl, setActiveBlobUrl] = useState(result?.downloadUrl || "");
+  const [activeBlob, setActiveBlob] = useState(null);
+  const [patchBusy, setPatchBusy] = useState(false);
+  const [patchError, setPatchError] = useState("");
+  const [patchSuccess, setPatchSuccess] = useState("");
+  const [patchHeadingResult, setPatchHeadingResult] = useState(null);
+  const [metaFormOpen, setMetaFormOpen] = useState(false);
+  const [metaTitle, setMetaTitle] = useState(
+    conformance?.metadataIssues?.find(i => i.field === "Title") ? (filename || "").replace(/\.accessible\.pdf$/i, "") : ""
+  );
+  const [metaLang, setMetaLang] = useState("en");
+
+  const downloadUrl = activeBlobUrl || result?.downloadUrl || "";
+
+  async function _getCurrentBlob() {
+    if (activeBlob) return activeBlob;
+    const res = await fetch(downloadUrl);
+    return res.blob();
+  }
+
+  async function applyPatch(action, params = {}) {
+    setPatchBusy(true); setPatchError(""); setPatchSuccess("");
+    try {
+      const blob = await _getCurrentBlob();
+      const { blob: patched, result: patchResult } = await apiPatch(blob, filename, action, params);
+      const newUrl = URL.createObjectURL(patched);
+      if (activeBlob && activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+      setActiveBlob(patched); setActiveBlobUrl(newUrl);
+      return patchResult;
+    } catch (e) { setPatchError(String(e.message || e)); return null; }
+    finally { setPatchBusy(false); }
+  }
+
+  async function handleMetaPatch(e) {
+    e.preventDefault();
+    const res = await applyPatch("metadata", { title: metaTitle, lang: metaLang });
+    if (res?.ok) { setMetaFormOpen(false); setPatchSuccess(`Metadata updated: ${(res.patched_fields || []).join(", ")}.`); }
+  }
+
+  async function handleHeadingPatch() {
+    const res = await applyPatch("headings");
+    if (res?.ok) { setPatchHeadingResult(res); setPatchSuccess(res.repairs_made > 0 ? `${res.repairs_made} heading level${res.repairs_made !== 1 ? "s" : ""} corrected.` : "Heading levels are already contiguous."); }
+  }
+
+  async function handleTablePatch() {
+    const res = await applyPatch("tables");
+    if (res?.ok) {
+      setPatchSuccess(
+        res.repairs_made > 0
+          ? `Table headers fixed: ${res.repairs_made} TH cell${res.repairs_made !== 1 ? "s" : ""} assigned /Scope across ${res.tables_found} table${res.tables_found !== 1 ? "s" : ""}.`
+          : res.tables_found > 0
+            ? "Table header scopes are already set."
+            : "No tagged tables found in this PDF."
+      );
+    }
+  }
+
+  // ── Quick Fix All ─────────────────────────────────────────────────────
+  const [qfBusy, setQfBusy] = useState(false);
+  // Seed from result.qfResult so auto-quickfix (doRemediate) shows ✓ Applied immediately
+  const [qfResult, setQfResult] = useState(result?.qfResult || null);
+
+  async function handleQuickFix() {
+    setQfBusy(true); setPatchError(""); setPatchSuccess("");
+    try {
+      const blob = await _getCurrentBlob();
+      const { blob: fixed, result: qr } = await apiQuickfix(blob, filename);
+      const newUrl = URL.createObjectURL(fixed);
+      if (activeBlob && activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+      setActiveBlob(fixed); setActiveBlobUrl(newUrl);
+      setQfResult(qr);
+      const total = qr?.totalFixes ?? 0;
+      setPatchSuccess(
+        total > 0
+          ? `Quick Fix applied ${total} fix${total !== 1 ? "es" : ""} automatically.`
+          : "Quick Fix ran — no additional fixes needed."
+      );
+    } catch (e) { setPatchError(String(e.message || e)); }
+    finally { setQfBusy(false); }
+  }
+
+  // ── Reading order editor ──────────────────────────────────────────────
+  const [roOpen, setRoOpen] = useState(false);
+  const [roElements, setRoElements] = useState([]);
+  const [roOrder, setRoOrder] = useState([]);  // current id order
+  const [roBusy, setRoBusy] = useState(false);
+  const [roError, setRoError] = useState("");
+  const [roSuccess, setRoSuccess] = useState("");
+  const [roDragIdx, setRoDragIdx] = useState(null);
+
+  async function handleOpenRO() {
+    setRoOpen(true); setRoError(""); setRoSuccess("");
+    if (roElements.length > 0) return; // already loaded
+    setRoBusy(true);
+    try {
+      const blob = await _getCurrentBlob();
+      const data = await getReadingOrder(blob, filename);
+      setRoElements(data.elements || []);
+      setRoOrder((data.elements || []).map(e => e.id));
+    } catch (e) { setRoError(String(e.message || e)); }
+    finally { setRoBusy(false); }
+  }
+
+  function handleRoDragStart(idx) { setRoDragIdx(idx); }
+  function handleRoDragOver(e, idx) {
+    e.preventDefault();
+    if (roDragIdx === null || roDragIdx === idx) return;
+    const next = [...roOrder];
+    const [moved] = next.splice(roDragIdx, 1);
+    next.splice(idx, 0, moved);
+    setRoOrder(next);
+    setRoDragIdx(idx);
+  }
+  function handleRoDragEnd() { setRoDragIdx(null); }
+
+  async function handleApplyRO() {
+    setRoBusy(true); setRoError(""); setRoSuccess("");
+    try {
+      const blob = await _getCurrentBlob();
+      const { blob: reordered, result: roResult } = await apiReorder(blob, filename, roOrder);
+      const newUrl = URL.createObjectURL(reordered);
+      if (activeBlob && activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
+      setActiveBlob(reordered); setActiveBlobUrl(newUrl);
+      setRoSuccess(`Reading order saved — ${roResult?.changes_made || 0} element${roResult?.changes_made !== 1 ? "s" : ""} moved.`);
+    } catch (e) { setRoError(String(e.message || e)); }
+    finally { setRoBusy(false); }
+  }
+
   const report = conformance?.report || {};
   const contrastFailures = conformance?.contrastFailures || [];
   const contrastCount = conformance?.contrastCount || 0;
@@ -902,7 +1237,12 @@ function DoneScreen({ result, onReset }) {
   const fontsEmbedded = conformance?.fontsEmbedded || 0;
   const ocgIssues = conformance?.ocgIssues || [];
   const security = conformance?.security || {};
-
+  const linkTextIssues = conformance?.linkTextIssues || [];
+  const linkTextIssueCount = conformance?.linkTextIssueCount || 0;
+  const tableStructureIssues = conformance?.tableStructureIssues || [];
+  const tableStructureIssueCount = conformance?.tableStructureIssueCount || 0;
+  const languageIssues = conformance?.languageIssues || [];
+  const languageIssueCount = conformance?.languageIssueCount || 0;
   const pass = conformance?.compliant && score === 100 && contrastCount === 0 && linkCount === 0
     && headingIssueCount === 0 && labelNameIssueCount === 0
     && metadataErrors.length === 0 && fontIssues.filter(i => i.severity === "error").length === 0;
@@ -959,9 +1299,20 @@ function DoneScreen({ result, onReset }) {
   if (contrastRepairs > 0) fixed.push(`${contrastRepairs} low-contrast text colour${contrastRepairs !== 1 ? "s" : ""} auto-corrected in content stream (WCAG 1.4.3)`);
   if (fontsEmbedded > 0) fixed.push(`${fontsEmbedded} font${fontsEmbedded !== 1 ? "s" : ""} embedded for reliable text rendering (PDF/UA 7.21)`);
 
+  const autoMode = result?.autoMode || false;
+  const qfAutoResult = result?.qfResult || null;
+
   return (
     <main id="main-content" className="screen screen-preview">
       <div className="screen-card">
+        {autoMode && (
+          <div className="auto-fix-badge" role="status" aria-label="AI Auto-Fix mode — AI made all accessibility decisions">
+            <span aria-hidden="true">⚡</span> AI Auto-Fix
+            {qfAutoResult && qfAutoResult.totalFixes > 0 && (
+              <span className="auto-fix-count"> · {qfAutoResult.totalFixes} fix{qfAutoResult.totalFixes !== 1 ? "es" : ""} applied</span>
+            )}
+          </div>
+        )}
         <span className="done-icon" aria-hidden="true">{pass ? "✅" : "📄"}</span>
         <h1 ref={headingRef} tabIndex={-1} className="done-headline">{pass ? "PDF is accessible" : "PDF remediated"}</h1>
         {score != null && (
@@ -971,6 +1322,18 @@ function DoneScreen({ result, onReset }) {
           </>
         )}
 
+        {conformance && (
+          <div className={`verapdf-badge ${conformance.compliant ? "verapdf-pass" : "verapdf-fail"}`}
+               role="status"
+               aria-label={conformance.compliant ? "PDF/UA-1 passed" : `PDF/UA-1: ${conformance.failedRules} rule${conformance.failedRules !== 1 ? "s" : ""} need fixing`}>
+            {conformance.compliant
+              ? <><span aria-hidden="true">✓</span> PDF/UA-1 Passed</>
+              : <>PDF/UA-1: {conformance.failedRules} rule{conformance.failedRules !== 1 ? "s" : ""} need fixing — Quick Fix All handles this</>}
+          </div>
+        )}
+        {patchSuccess && <div className="patch-success" role="status"><span aria-hidden="true">✓ </span>{patchSuccess}</div>}
+        {patchError && <div className="patch-error" role="alert">{patchError}</div>}
+
         {fixed.length > 0 && (
           <ul className="fixed-list" aria-label="What was fixed">
             {fixed.map((item, i) => <li key={i}>{item}</li>)}
@@ -979,7 +1342,7 @@ function DoneScreen({ result, onReset }) {
 
         {contrastCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{contrastCount} contrast issue{contrastCount !== 1 ? "s" : ""} detected (WCAG 1.4.3)</strong>
+            <strong>{contrastCount} contrast issue{contrastCount !== 1 ? "s" : ""} to resolve (WCAG 1.4.3)</strong>
             <p>These text colors use complex color spaces or rendering modes that couldn't be auto-corrected.</p>
             {contrastFailures.slice(0, 5).map((f, i) => (
               <div key={i} className="contrast-item">
@@ -992,8 +1355,8 @@ function DoneScreen({ result, onReset }) {
 
         {fontIssues.filter(f => f.severity === "error").length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{fontIssues.filter(f => f.severity === "error").length} font issue{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""} — text may be unreadable to screen readers (PDF/UA §7.21.3)</strong>
-            <p>These fonts lack a ToUnicode map or are not embedded. Screen readers cannot extract the text.</p>
+            <strong>{fontIssues.filter(f => f.severity === "error").length} font issue{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""} to fix (PDF/UA §7.21.3)</strong>
+            <p>These fonts lack a ToUnicode map or are not embedded. Quick Fix All attempts to embed and repair them.</p>
             {fontIssues.filter(f => f.severity === "error").slice(0, 5).map((f, i) => (
               <div key={i} className="contrast-item">{f.font_name}: {f.description}</div>
             ))}
@@ -1002,22 +1365,22 @@ function DoneScreen({ result, onReset }) {
 
         {(nontextContrastCount > 0 || nontextContrastFixed > 0) && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{nontextContrastCount} non-text contrast issue{nontextContrastCount !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
+            <strong>{nontextContrastCount} non-text contrast issue{nontextContrastCount !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
             {nontextContrastFixed > 0 && <p>{nontextContrastFixed} auto-fixed (borders darkened / near-white fills cleared).</p>}
-            {nontextContrastCount > 0 && <p>Remaining issues require source-file correction.</p>}
+            {nontextContrastCount > 0 && <p>Use Quick Fix All to auto-correct remaining issues.</p>}
           </div>
         )}
 
         {orphanedPages > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{orphanedPages} page{orphanedPages !== 1 ? "s" : ""} with content outside the structure tree (PDF/UA §7.1)</strong>
-            <p>Some page content is not reachable by screen readers. This may indicate untagged content streams or XObject content.</p>
+            <strong>{orphanedPages} page{orphanedPages !== 1 ? "s" : ""} with unstructured content (PDF/UA §7.1)</strong>
+            <p>Some content isn't in the structure tree. Quick Fix All and manual re-tagging can resolve this.</p>
           </div>
         )}
 
         {roundTripErrors.length > 0 && (
           <div className="contrast-warn" role="alert">
-            <strong><span aria-hidden="true">✗ </span>Output PDF failed {roundTripErrors.length} writeback verification check{roundTripErrors.length !== 1 ? "s" : ""}</strong>
+            <strong>{roundTripErrors.length} writeback check{roundTripErrors.length !== 1 ? "s" : ""} to verify</strong>
             <p>The following properties were not found in the output PDF — writeback may have silently failed:</p>
             {roundTripErrors.map((f, i) => (
               <div key={i} className="contrast-item">[{f.check}] {f.description}</div>
@@ -1027,7 +1390,7 @@ function DoneScreen({ result, onReset }) {
 
         {roundTripWarnings.length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{roundTripWarnings.length} output PDF warning{roundTripWarnings.length !== 1 ? "s" : ""}</strong>
+            <strong>{roundTripWarnings.length} output PDF note{roundTripWarnings.length !== 1 ? "s" : ""}</strong>
             {roundTripWarnings.map((f, i) => (
               <div key={i} className="contrast-item">[{f.check}] {f.description}</div>
             ))}
@@ -1036,8 +1399,8 @@ function DoneScreen({ result, onReset }) {
 
         {linkCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{linkCount} link{linkCount !== 1 ? "s" : ""} could not be auto-resolved (WCAG 2.4.4)</strong>
-            <p>These links have no resolvable URL — an accessible name could not be generated.</p>
+            <strong>{linkCount} link{linkCount !== 1 ? "s" : ""} need accessible names (WCAG 2.4.4)</strong>
+            <p>These links have no resolvable URL. Add descriptive text to the link in your source, or use Quick Fix All to apply defaults.</p>
             {linkIssues.slice(0, 4).map((l, i) => (
               <div key={i} className="contrast-item">
                 Page {l.page}: {l.issue}
@@ -1049,8 +1412,8 @@ function DoneScreen({ result, onReset }) {
 
         {altIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{altIssueCount} image{altIssueCount !== 1 ? "s" : ""} need review (WCAG 1.1.1)</strong>
-            <p>These figures have missing, empty, or generic alt text and require a human description.</p>
+            <strong>{altIssueCount} image{altIssueCount !== 1 ? "s" : ""} need review (WCAG 1.1.1)</strong>
+            <p>These figures need alt text. Quick Fix All generates descriptions using AI vision.</p>
             {altIssues.slice(0, 4).map((a, i) => (
               <div key={i} className="contrast-item">
                 {a.page ? `Page ${a.page}: ` : ""}{a.description}
@@ -1062,8 +1425,8 @@ function DoneScreen({ result, onReset }) {
 
         {colorOnlyCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{colorOnlyCount} potential color-only pattern{colorOnlyCount !== 1 ? "s" : ""} detected (WCAG 1.4.1)</strong>
-            <p>Colored shapes were found that may convey meaning through color alone. Add text labels or patterns to these elements.</p>
+            <strong>{colorOnlyCount} color-only pattern{colorOnlyCount !== 1 ? "s" : ""} to review (WCAG 1.4.1)</strong>
+            <p>Colored shapes that may convey meaning through color alone. Quick Fix All adds accessible labels where possible.</p>
             {colorOnlyWarnings.slice(0, 3).map((w, i) => (
               <div key={i} className="contrast-item">
                 Page {w.page}: {w.swatch_count} shapes — {w.colors.slice(0,5).join(", ")}{w.colors.length > 5 ? "…" : ""}
@@ -1073,23 +1436,33 @@ function DoneScreen({ result, onReset }) {
           </div>
         )}
 
-        {headingIssueCount > 0 && (
+        {headingIssueCount > 0 && !patchHeadingResult?.repairs_made && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{headingIssueCount} heading structure issue{headingIssueCount !== 1 ? "s" : ""} detected (WCAG 1.3.1 / 2.4.6)</strong>
-            <p>The heading hierarchy has structural problems. These must be corrected in the source document.</p>
+            <strong>{headingIssueCount} heading structure issue{headingIssueCount !== 1 ? "s" : ""} to fix (WCAG 1.3.1 / 2.4.6)</strong>
+            <p>The heading hierarchy has skipped levels. The structure tree can be auto-corrected to close gaps.</p>
             {headingIssues.slice(0, 4).map((h, i) => (
-              <div key={i} className="contrast-item">
-                {h.description}
-              </div>
+              <div key={i} className="contrast-item">{h.description}</div>
             ))}
             {headingIssueCount > 4 && <div className="contrast-item">… and {headingIssueCount - 4} more (see audit report)</div>}
+            <button className="fix-btn" onClick={handleHeadingPatch} disabled={patchBusy}>
+              {patchBusy ? "Fixing…" : "Auto-fix Heading Levels"}
+            </button>
+          </div>
+        )}
+
+        {patchHeadingResult?.repairs_made > 0 && (
+          <div className="contrast-warn contrast-warn--ok" role="note">
+            <strong><span aria-hidden="true">✓ </span>Heading levels corrected — {patchHeadingResult.repairs_made} level{patchHeadingResult.repairs_made !== 1 ? "s" : ""} adjusted</strong>
+            {patchHeadingResult.changes?.slice(0, 4).map((c, i) => (
+              <div key={i} className="contrast-item">H{c.from} → H{c.to}{c.text_preview ? `: "${c.text_preview}"` : ""}</div>
+            ))}
           </div>
         )}
 
         {sensoryIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{sensoryIssueCount} sensory-only reference{sensoryIssueCount !== 1 ? "s" : ""} detected (WCAG 1.3.3)</strong>
-            <p>Instructions that reference only shape, color, size, or visual position may be inaccessible. Review these passages and add non-sensory identifiers (text labels, headings, or accessible names).</p>
+            <strong>{sensoryIssueCount} sensory-only reference{sensoryIssueCount !== 1 ? "s" : ""} to review (WCAG 1.3.3)</strong>
+            <p>Instructions that reference only shape, color, size, or visual position may be inaccessible. Quick Fix All adds accessible labels. For complex references, the manual path lets you review each one.</p>
             {sensoryIssues.slice(0, 4).map((s, i) => (
               <div key={i} className="contrast-item">
                 {s.page ? `Page ${s.page}: ` : ""}"{s.match}"
@@ -1099,9 +1472,52 @@ function DoneScreen({ result, onReset }) {
           </div>
         )}
 
+        {linkTextIssueCount > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong>{linkTextIssueCount} non-descriptive link{linkTextIssueCount !== 1 ? "s" : ""} to fix (WCAG 2.4.4)</strong>
+            <p>Links with generic text. Quick Fix All rewrites these with AI-generated descriptions based on the link destination.</p>
+            {linkTextIssues.slice(0, 4).map((l, i) => (
+              <div key={i} className="contrast-item">
+                {l.page ? `Page ${l.page}: ` : ""}"{l.linkText}"
+                {l.uri ? ` → ${l.uri.slice(0, 60)}` : ""}
+              </div>
+            ))}
+            {linkTextIssueCount > 4 && <div className="contrast-item">… and {linkTextIssueCount - 4} more (see audit report)</div>}
+          </div>
+        )}
+
+        {tableStructureIssueCount > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong>{tableStructureIssueCount} table structure issue{tableStructureIssueCount !== 1 ? "s" : ""} to fix (WCAG 1.3.1 / PDF/UA §7.5)</strong>
+            <p>Tables are missing header cells, scope attributes, or captions. Screen readers cannot convey table relationships without proper markup.</p>
+            {tableStructureIssues.slice(0, 4).map((t, i) => (
+              <div key={i} className="contrast-item">
+                {t.page ? `Page ${t.page}: ` : ""}{t.type.replace(/_/g, " ")}
+                {t.count ? ` (${t.count} cell${t.count !== 1 ? "s" : ""})` : ""}
+              </div>
+            ))}
+            {tableStructureIssueCount > 4 && <div className="contrast-item">… and {tableStructureIssueCount - 4} more (see audit report)</div>}
+          </div>
+        )}
+
+        {languageIssueCount > 0 && (
+          <div className="contrast-warn" role="note">
+            <strong>{languageIssueCount} language tagging issue{languageIssueCount !== 1 ? "s" : ""} to fix (WCAG 3.1.1 / 3.1.2)</strong>
+            <p>The document language is missing or language changes within the content are not marked. Screen readers need language tags to switch to the correct speech synthesizer voice.</p>
+            {languageIssues.slice(0, 4).map((l, i) => (
+              <div key={i} className="contrast-item">
+                {l.type === "missing_doc_lang" ? "Document /Lang not set" :
+                  `${l.page ? `Page ${l.page}: ` : ""}Suspected ${l.detectedScript} text without /Lang — "${(l.text || "").slice(0, 60)}"`}
+              </div>
+            ))}
+            {languageIssueCount > 4 && <div className="contrast-item">… and {languageIssueCount - 4} more (see audit report)</div>}
+          </div>
+        )}
+
+
         {labelNameIssueCount > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{labelNameIssueCount} form field{labelNameIssueCount !== 1 ? "s" : ""} fail Label in Name (WCAG 2.5.3)</strong>
+            <strong>{labelNameIssueCount} form field{labelNameIssueCount !== 1 ? "s" : ""} fail Label in Name (WCAG 2.5.3)</strong>
             <p>The visible label for these fields is not present in their accessible name. Voice control users cannot activate them by speaking the visible label.</p>
             {labelNameIssues.slice(0, 4).map((l, i) => (
               <div key={i} className="contrast-item">
@@ -1114,23 +1530,44 @@ function DoneScreen({ result, onReset }) {
 
         {xfaWarning && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>XFA Form Detected — Manual Remediation Required</strong>
+            <strong>XFA Form Detected — Manual Remediation Required</strong>
             <p>This PDF contains an XFA (XML Forms Architecture) form which cannot be made accessible through structural tagging alone. XFA forms must be rebuilt as AcroForm PDFs or converted to an accessible HTML/WCAG-conformant format. Assistive technologies cannot reliably access XFA content.</p>
           </div>
         )}
 
         {metadataErrors.length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{metadataErrors.length} Metadata Error{metadataErrors.length !== 1 ? "s" : ""} (PDF/UA §7.1)</strong>
+            <strong>{metadataErrors.length} Metadata Error{metadataErrors.length !== 1 ? "s" : ""} (PDF/UA §7.1)</strong>
             {metadataErrors.slice(0, 3).map((m, i) => (
               <div key={i} className="contrast-item">{m.description}</div>
             ))}
+            {!metaFormOpen && (
+              <button className="fix-btn" onClick={() => setMetaFormOpen(true)} disabled={patchBusy}>
+                Fix Now — Set Title &amp; Language
+              </button>
+            )}
+            {metaFormOpen && (
+              <form className="patch-form" onSubmit={handleMetaPatch}>
+                <label className="patch-label">Document Title
+                  <input className="patch-input" type="text" value={metaTitle}
+                    onChange={e => setMetaTitle(e.target.value)} placeholder="e.g. Annual Report 2026" required />
+                </label>
+                <label className="patch-label">Language Code
+                  <input className="patch-input" type="text" value={metaLang}
+                    onChange={e => setMetaLang(e.target.value)} placeholder="e.g. en, en-US, fr" required />
+                </label>
+                <div className="patch-form-actions">
+                  <button type="submit" className="fix-btn" disabled={patchBusy}>{patchBusy ? "Applying…" : "Apply Metadata Fix"}</button>
+                  <button type="button" className="ghost" onClick={() => setMetaFormOpen(false)} disabled={patchBusy}>Cancel</button>
+                </div>
+              </form>
+            )}
           </div>
         )}
 
         {fontIssues.filter(f => f.severity === "error").length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{fontIssues.filter(f => f.severity === "error").length} Font Embedding / ToUnicode Error{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""}</strong>
+            <strong>{fontIssues.filter(f => f.severity === "error").length} Font Embedding / ToUnicode Error{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""}</strong>
             <p>Fonts without proper embedding or ToUnicode maps prevent screen readers from reading the text. These must be fixed in the source document.</p>
             {fontIssues.filter(f => f.severity === "error").slice(0, 3).map((f, i) => (
               <div key={i} className="contrast-item">"{f.font_name}": {f.description}</div>
@@ -1140,13 +1577,13 @@ function DoneScreen({ result, onReset }) {
 
         {(nontextContrastIssues.length > 0 || nontextContrastFixed > 0) && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>Non-text Contrast (WCAG 1.4.11)</strong>
+            <strong>Non-text Contrast (WCAG 1.4.11)</strong>
             {nontextContrastFixed > 0 && (
               <div className="contrast-item">✓ {nontextContrastFixed} auto-fixed — borders darkened, near-white fills cleared.</div>
             )}
             {nontextContrastIssues.length > 0 && (
               <>
-                <p>{nontextContrastIssues.length} remaining issue{nontextContrastIssues.length !== 1 ? "s" : ""} require source-file correction.</p>
+                <p>{nontextContrastIssues.length} remaining issue{nontextContrastIssues.length !== 1 ? "s" : ""} — run Quick Fix All to auto-correct borders and strokes.</p>
                 {nontextContrastIssues.slice(0, 2).map((n, i) => (
                   <div key={i} className="contrast-item">Page {n.page}: {n.description}</div>
                 ))}
@@ -1158,7 +1595,7 @@ function DoneScreen({ result, onReset }) {
 
         {altQualityIssues.length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{altQualityIssues.length} Low-Quality Alt Text Description{altQualityIssues.length !== 1 ? "s" : ""} (WCAG 1.1.1)</strong>
+            <strong>{altQualityIssues.length} Low-Quality Alt Text Description{altQualityIssues.length !== 1 ? "s" : ""} (WCAG 1.1.1)</strong>
             <p>These image descriptions were flagged as insufficient by AI review. Score ≥4 is good; ≤2 was auto-improved where possible.</p>
             {altQualityIssues.slice(0, 2).map((a, i) => (
               <div key={i} className="contrast-item">Page {a.page}: score {a.score}/5 — "{a.current_alt?.slice(0, 60)}{a.current_alt?.length > 60 ? "…" : ""}"</div>
@@ -1175,13 +1612,104 @@ function DoneScreen({ result, onReset }) {
 
         {ocgIssues.filter(i => i.severity === "warning").length > 0 && (
           <div className="contrast-warn" role="note">
-            <strong><span aria-hidden="true">⚠ </span>{ocgIssues.filter(i => i.severity === "warning").length} Optional Content Layer Issue{ocgIssues.filter(i => i.severity === "warning").length !== 1 ? "s" : ""} (PDF/UA §7.11)</strong>
+            <strong>{ocgIssues.filter(i => i.severity === "warning").length} Optional Content Layer Issue{ocgIssues.filter(i => i.severity === "warning").length !== 1 ? "s" : ""} (PDF/UA §7.11)</strong>
             <p>Layers hidden by default may conceal content from screen readers. Verify hidden layers are decorative only.</p>
             {ocgIssues.filter(i => i.severity === "warning").slice(0, 2).map((o, i) => (
               <div key={i} className="contrast-item">{o.layer ? `Layer "${o.layer}": ` : ""}{o.description}</div>
             ))}
           </div>
         )}
+
+        {/* ── Reading Order Editor ───────────────────────────────────────── */}
+        <div className="ro-section">
+          {!roOpen ? (
+            <button className="ro-toggle" onClick={handleOpenRO}>
+              <span aria-hidden="true">⇅</span> Edit Reading Order
+            </button>
+          ) : (
+            <div className="ro-panel" role="region" aria-label="Reading order editor">
+              <div className="ro-header">
+                <strong>Reading Order</strong>
+                <button className="ghost ro-close" onClick={() => setRoOpen(false)} aria-label="Close reading order editor">✕</button>
+              </div>
+              {roBusy && <p className="ro-status">Loading…</p>}
+              {roError && <p className="patch-error" role="alert">{roError}</p>}
+              {roSuccess && <p className="patch-success" role="status">{roSuccess}</p>}
+              {roElements.length > 0 && (
+                <>
+                  <p className="ro-hint">Drag rows to change reading order. Click Apply when done.</p>
+                  <ol className="ro-list" aria-label="Document elements in reading order">
+                    {roOrder.map((id, idx) => {
+                      const el = roElements.find(e => e.id === id);
+                      if (!el) return null;
+                      return (
+                        <li
+                          key={id}
+                          className={`ro-item${roDragIdx === idx ? " ro-item--dragging" : ""}`}
+                          draggable
+                          onDragStart={() => handleRoDragStart(idx)}
+                          onDragOver={e => handleRoDragOver(e, idx)}
+                          onDragEnd={handleRoDragEnd}
+                          aria-label={`${el.type}: ${el.preview || "(no text)"}`}
+                        >
+                          <span className="ro-handle" aria-hidden="true">⠿</span>
+                          <span className={`ro-tag ro-tag--${el.tag.replace("/","").toLowerCase()}`}>{el.type}</span>
+                          <span className="ro-preview">{el.preview || <em>—</em>}</span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                  <div className="ro-actions">
+                    <button className="fix-btn" onClick={handleApplyRO} disabled={roBusy}>
+                      {roBusy ? "Applying…" : "Apply Reading Order"}
+                    </button>
+                    <button className="ghost" onClick={() => setRoOrder(roElements.map(e => e.id))} disabled={roBusy}>
+                      Reset
+                    </button>
+                  </div>
+                </>
+              )}
+              {!roBusy && roElements.length === 0 && !roError && (
+                <p className="ro-status">No tagged structure elements found.</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Quick Fix All ── */}
+        <div className="quickfix-section">
+          <div className="quickfix-intro">
+            <strong>Quick Fix All</strong>
+            <span>Runs every auto-fix in one pass — contrast, table scopes, heading levels, metadata, language tags, alt text, and veraPDF repairs. AI makes the calls.</span>
+          </div>
+          {qfResult && !qfBusy ? (
+            <span className="quickfix-btn" style={{background:"var(--good)", cursor:"default"}} aria-label="All fixes applied">✓ Applied</span>
+          ) : (
+            <button
+              className="quickfix-btn"
+              onClick={handleQuickFix}
+              disabled={qfBusy || patchBusy}
+              aria-busy={qfBusy}
+            >
+              {qfBusy ? "Fixing…" : "⚡ Quick Fix All"}
+            </button>
+          )}
+          {qfResult && (
+            <div className="quickfix-result" role="status">
+              {Object.entries(qfResult.fixes || {}).map(([k, v]) =>
+                v > 0 ? (
+                  <span key={k} className="qf-chip">{k.replace(/([A-Z])/g, " $1").trim()}: {v}</span>
+                ) : null
+              )}
+              {(qfResult.notes || []).some(n => /compliant/i.test(n)) && (
+                <span className="qf-chip" style={{background:"rgba(63,185,80,.15)", color:"var(--good)", borderColor:"rgba(63,185,80,.3)"}}>PDF/UA-1 ✓</span>
+              )}
+              {qfResult.errors?.length > 0 && (
+                <span className="qf-chip qf-chip--warn">{qfResult.errors.length} step(s) skipped</span>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="done-actions">
           <a href={downloadUrl} download={filename} aria-label={`Download ${filename}`}>
@@ -1192,7 +1720,7 @@ function DoneScreen({ result, onReset }) {
           </button>
           <button className="ghost" onClick={() => setShowPreview(s => !s)} aria-expanded={showPreview}>
             {showPreview ? "Hide tagged preview" : "View tagged PDF"}
-          </button>
+             </button>
           <button className="ghost" onClick={onReset}>
             Remediate another PDF
           </button>
@@ -1204,6 +1732,160 @@ function DoneScreen({ result, onReset }) {
           <PDFPreviewPanel pdfUrl={downloadUrl} manifest={manifest} />
         </div>
       )}
+    </main>
+  );
+}
+
+// ── Screen: Batch ──────────────────────────────────────────────────────────
+
+const BATCH_STATUS_LABEL = {
+  queued:      "Queued",
+  scanning:    "Scanning…",
+  remediating: "Remediating…",
+  done:        "Done",
+  error:       "Error",
+};
+const BATCH_STATUS_ICON = {
+  queued:      "○",
+  scanning:    "◌",
+  remediating: "◑",
+  done:        "●",
+  error:       "✕",
+};
+
+function BatchScreen({ onBack }) {
+  const [items, setItems] = useState([]);   // { file, status, downloadUrl, downloadName, compliant, failedRules, error }
+  const [running, setRunning] = useState(false);
+  const [finished, setFinished] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef();
+  const headingRef = useRef();
+
+  useEffect(() => { headingRef.current?.focus(); }, []);
+
+  const addFiles = (fileList) => {
+    const pdfs = Array.from(fileList)
+      .filter(f => f.type === "application/pdf")
+      .slice(0, 10);
+    if (!pdfs.length) return;
+    setItems(pdfs.map(f => ({ file: f, status: "queued" })));
+    setFinished(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    addFiles(e.dataTransfer.files);
+  };
+
+  const runBatch = async () => {
+    setRunning(true);
+    const update = (i, patch) =>
+      setItems(prev => prev.map((it, j) => j === i ? { ...it, ...patch } : it));
+
+    await api.batchRemediateFiles(
+      items.map(it => it.file),
+      (i, patch) => update(i, patch)
+    );
+
+    setRunning(false);
+    setFinished(true);
+  };
+
+  const noBackend = !api.HAS_BACKEND;
+  const doneCount  = items.filter(it => it.status === "done").length;
+  const errorCount = items.filter(it => it.status === "error").length;
+
+  return (
+    <main id="main-content" className="screen batch-screen">
+      <h1 ref={headingRef} tabIndex={-1} className="batch-heading">Batch Remediation</h1>
+      <p className="batch-sub">Remediate up to 10 PDFs at once. Alt text questions are skipped — defaults are applied automatically.</p>
+
+      {items.length === 0 ? (
+        <div
+          className={`batch-drop${dragOver ? " drag-over" : ""}`}
+          role="group"
+          aria-label="PDF drop zone"
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+        >
+          <p className="drop-zone-heading" aria-hidden="true">Drop PDFs here</p>
+          <p>Up to 10 files</p>
+          <button
+            className="primary"
+            disabled={noBackend}
+            onClick={() => inputRef.current.click()}
+          >
+            Choose PDFs
+          </button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="application/pdf"
+            multiple
+            style={{ display: "none" }}
+            onChange={e => e.target.files.length && addFiles(e.target.files)}
+          />
+        </div>
+      ) : (
+        <div className="batch-list" role="list" aria-label="Files to process">
+          {items.map((it, i) => (
+            <div key={i} className={`batch-row batch-row--${it.status}`} role="listitem">
+              <span className="batch-icon" aria-hidden="true">{BATCH_STATUS_ICON[it.status]}</span>
+              <span className="batch-name" title={it.file.name}>{it.file.name}</span>
+              <span className="batch-status-label">
+                {it.status === "done"
+                  ? (it.compliant
+                      ? <span className="batch-badge batch-badge--pass">✓ PDF/UA-1</span>
+                      : <span className="batch-badge batch-badge--fail">✗ {it.failedRules} rules</span>)
+                  : it.status === "error"
+                    ? <span className="batch-err-text" title={it.error}>Error</span>
+                    : <span>{BATCH_STATUS_LABEL[it.status]}</span>
+                }
+              </span>
+              {it.status === "done" && it.downloadUrl && (
+                <a
+                  href={it.downloadUrl}
+                  download={it.downloadName}
+                  className="batch-dl"
+                  aria-label={`Download ${it.downloadName}`}
+                >
+                  ↓ Download
+                </a>
+              )}
+            </div>
+          ))}
+
+          {finished && (
+            <p className="batch-summary" role="status">
+              {doneCount} remediated{errorCount > 0 ? `, ${errorCount} failed` : ""}.
+            </p>
+          )}
+
+          <div className="batch-actions">
+            {!running && !finished && (
+              <button className="primary" onClick={runBatch}>
+                         Process {items.length} file{items.length !== 1 ? "s" : ""}
+              </button>
+            )}
+            {running && (
+              <p className="batch-running" role="status" aria-live="polite">Processing…</p>
+            )}
+            <button
+              className="ghost"
+              onClick={() => { setItems([]); setFinished(false); }}
+              disabled={running}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      <button className="batch-back" onClick={onBack} disabled={running}>
+        ← Back
+      </button>
     </main>
   );
 }

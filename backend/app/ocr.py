@@ -100,10 +100,14 @@ def ocr_pdf(pdf_path: str) -> dict:
                 if not text:
                     continue
                 # Convert pixel coords back to PDF user-space points.
+                # Tesseract y=0 is at the TOP; PDF y=0 is at the BOTTOM — flip.
                 inv = 72.0 / _DPI
+                page_h_pt = page.rect.height
                 bbox = [
-                    b["x0"] * inv, b["y0"] * inv,
-                    b["x1"] * inv, b["y1"] * inv,
+                    round(b["x0"] * inv, 2),
+                    round(page_h_pt - b["y1"] * inv, 2),   # screen bottom → PDF y0
+                    round(b["x1"] * inv, 2),
+                    round(page_h_pt - b["y0"] * inv, 2),   # screen top    → PDF y1
                 ]
                 nodes.append({
                     "id": str(uuid.uuid4()),

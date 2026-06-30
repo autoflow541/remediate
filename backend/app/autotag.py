@@ -206,8 +206,8 @@ def _heuristic_autotag(pdf_path: str) -> dict:
         text = " ".join(parts).strip()
         avg = sum(sizes) / len(sizes) if sizes else body_size
         words = len(text.split())
-        is_label = (total > 0 and bold / total >= 0.6
-                    and words <= 6 and text and not text.endswith("."))
+        is_label = (total > 0 and bold / total >= 0.75
+                    and words <= 4 and text and not text.endswith("."))
         return is_label, text, avg
 
     def _classify_tag(avg_size: float, body_size: float, is_label: bool) -> str:
@@ -216,7 +216,7 @@ def _heuristic_autotag(pdf_path: str) -> dict:
             return "H1"
         if ratio >= 1.3:
             return "H2"
-        if ratio >= 1.1:
+        if ratio >= 1.15:
             return "H3"
         if is_label:
             return "H3"
@@ -250,13 +250,7 @@ def _heuristic_autotag(pdf_path: str) -> dict:
             if current_lines:
                 segments.append(("body", current_lines))
 
-            raw_bbox = block.get("bbox") or [0, 0, 0, 0]
-            # Convert PyMuPDF device coords (origin top-left, y↓) to PDF coords
-            # (origin bottom-left, y↑) so the manifest is in a single consistent
-            # coordinate space that matches ODL output and writeback expectations.
-            # PyMuPDF: [x0, y0_top, x1, y1_bottom]  →  PDF: [x0, ph-y1, x1, ph-y0]
             ph = page_h or 792.0
-            bbox = [raw_bbox[0], ph - raw_bbox[3], raw_bbox[2], ph - raw_bbox[1]]
 
             for mode, seg_lines in segments:
                 text_parts, sizes, bold_spans, total_spans = [], [], 0, 0
@@ -278,13 +272,30 @@ def _heuristic_autotag(pdf_path: str) -> dict:
                 is_label = mode == "label"
                 tag = _classify_tag(avg_size, body_size, is_label)
 
+                # Compute bbox from the segment's own lines (not the whole block)
+                # so that heading + body in the same block get distinct bboxes.
+                # Fallback to block bbox if no line bboxes available.
+                seg_xs0, seg_ys0, seg_xs1, seg_ys1 = [], [], [], []
+                for line in seg_lines:
+                    lb = line.get("bbox")
+                    if lb and len(lb) == 4:
+                        seg_xs0.append(lb[0]); seg_ys0.append(lb[1])
+                        seg_xs1.append(lb[2]); seg_ys1.append(lb[3])
+                if seg_xs0:
+                    raw_bbox = [min(seg_xs0), min(seg_ys0), max(seg_xs1), max(seg_ys1)]
+                else:
+                    raw_bbox = block.get("bbox") or [0, 0, 0, 0]
+                # Convert PyMuPDF device coords (origin top-left, y↓) to PDF coords
+                # (origin bottom-left, y↑):  [x0, ph-y1, x1, ph-y0]
+                seg_bbox = [raw_bbox[0], ph - raw_bbox[3], raw_bbox[2], ph - raw_bbox[1]]
+
                 n += 1
                 nodes.append({
                     "id": "n" + str(n),
                     "tag": tag,
                     "page": page_num,
                     "text": text,
-                    "bbox": list(bbox),   # PDF coords (y from bottom)
+                    "bbox": seg_bbox,   # PDF coords (y from bottom), per-segment
                     "source": {
                         "type": tag.lower(),
                         "fontSize": avg_size,

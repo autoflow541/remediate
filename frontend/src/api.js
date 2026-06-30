@@ -60,11 +60,98 @@ export async function remediate(file, manifest, flavour = "ua1") {
   return { blob, conformance };
 }
 
-async function errText(res, label) {
-  try {
-    const body = await res.json();
-    return `${label} ${res.status}: ${body.detail || JSON.stringify(body)}`;
-  } catch {
-    return `${label} ${res.status}`;
+/**
+ * Patch: apply a one-click fix to an already-remediated PDF blob.
+ *
+ * action = "metadata" | "headings"
+ * params = { title, lang, author, subject }  (for metadata action)
+ *
+ * Returns { blob, result } — blob is the patched PDF, result is the X-Patch-Result JSON.
+ */
+export async function patch(pdfBlob, filename, action, params = {}) {
+  const fd = new FormData();
+  fd.append("file", pdfBlob, filename || "document.pdf");
+  fd.append("action", action);
+  if (params.title   !== undefined) fd.append("title",   params.title);
+  if (params.lang    !== undefined) fd.append("lang",    params.lang);
+  if (params.author  !== undefined) fd.append("author",  params.author);
+  if (params.subject !== undefined) fd.append("subject", params.subject);
+  const res = await fetch(url("/patch"), { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await errText(res, "patch"));
+  let result = null;
+  try { result = JSON.parse(res.headers.get("X-Patch-Result") || "null"); } catch {}
+  const blob = await res.blob();
+  return { blob, result };
+}
+
+/**
+ * Quick Fix All — applies every AI-driven auto-fix to an already-remediated PDF.
+ * Returns { blob, result } — blob is the patched PDF, result is X-QuickFix-Result JSON.
+ */
+export async function quickfix(pdfBlob, filename) {
+  const fd = new FormData();
+  fd.append("file", pdfBlob, filename || "document.pdf");
+  const res = await fetch(url("/quickfix"), { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await errText(res, "quickfix"));
+  let result = null;
+  try { result = JSON.parse(res.headers.get("X-QuickFix-Result") || "null"); } catch {}
+  const blob = await res.blob();
+  return { blob, result };
+}
+
+export async function getReadingOrder(pdfBlob, filename) {
+  const fd = new FormData();
+  fd.append("file", pdfBlob, filename || "document.pdf");
+  const res = await fetch(url("/reading-order"), { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await errText(res, "reading-order"));
+  return res.json();
+}
+
+export async function reorder(pdfBlob, filename, orderedIds) {
+  const fd = new FormData();
+  fd.append("file", pdfBlob, filename || "document.pdf");
+  fd.append("order", JSON.stringify(orderedIds));
+  const res = await fetch(url("/reorder"), { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await errText(res, "reorder"));
+  let result = null;
+  try { result = JSON.parse(res.headers.get("X-Reorder-Result") || "null"); } catch {}
+  const blob = await res.blob();
+  return { blob, result };
+}
+
+/**
+ * Batch remediation — processes files one at a time client-side so the UI
+ * can show live per-file progress.
+ * onStatus(index, patch) is called after each phase: scanning, remediating, done, error.
+ */
+export async function batchRemediateFiles(files, onStatus) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    try {
+      onStatus(i, { status: "scanning" });
+      let m = await autotag(file);
+      const { _questions, ...manifest } = m;
+      manifest.document = {
+        ...(manifest.document || {}),
+        language: manifest.document?.language || "en-US",
+      };
+      onStatus(i, { status: "remediating" });
+      const { blob, conformance } = await remediate(file, manifest);
+      const baseName = file.name.replace(/\.pdf$/i, "");
+      const downloadUrl = URL.createObjectURL(blob);
+      onStatus(i, {
+        status: "done",
+        downloadUrl,
+        downloadName: `${baseName}.accessible.pdf`,
+        compliant: conformance?.compliant ?? false,
+        failedRules: conformance?.failedRules ?? 0,
+      });
+    } catch (e) {
+      onStatus(i, { status: "error", error: String(e.message || e) });
+    }
   }
+}
+
+function errText(res, label) {
+  return res.text().then(t => `${label} ${res.status}: ${t.slice(0, 200)}`).catch(() => `${label} ${res.status}`);
 }
