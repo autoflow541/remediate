@@ -705,53 +705,6 @@ function PDFPreviewPanel({ pdfUrl, manifest }) {
 // ── Audit report generator ─────────────────────────────────────────────────
 
 function buildAuditReport({ conformance, score, filename, manifest }) {
-  // ── Reading order editor ──────────────────────────────────────────────
-  const [roOpen, setRoOpen] = useState(false);
-  const [roElements, setRoElements] = useState([]);
-  const [roOrder, setRoOrder] = useState([]);  // current id order
-  const [roBusy, setRoBusy] = useState(false);
-  const [roError, setRoError] = useState("");
-  const [roSuccess, setRoSuccess] = useState("");
-  const [roDragIdx, setRoDragIdx] = useState(null);
-
-  async function handleOpenRO() {
-    setRoOpen(true); setRoError(""); setRoSuccess("");
-    if (roElements.length > 0) return; // already loaded
-    setRoBusy(true);
-    try {
-      const blob = await _getCurrentBlob();
-      const data = await getReadingOrder(blob, filename);
-      setRoElements(data.elements || []);
-      setRoOrder((data.elements || []).map(e => e.id));
-    } catch (e) { setRoError(String(e.message || e)); }
-    finally { setRoBusy(false); }
-  }
-
-  function handleRoDragStart(idx) { setRoDragIdx(idx); }
-  function handleRoDragOver(e, idx) {
-    e.preventDefault();
-    if (roDragIdx === null || roDragIdx === idx) return;
-    const next = [...roOrder];
-    const [moved] = next.splice(roDragIdx, 1);
-    next.splice(idx, 0, moved);
-    setRoOrder(next);
-    setRoDragIdx(idx);
-  }
-  function handleRoDragEnd() { setRoDragIdx(null); }
-
-  async function handleApplyRO() {
-    setRoBusy(true); setRoError(""); setRoSuccess("");
-    try {
-      const blob = await _getCurrentBlob();
-      const { blob: reordered, result: roResult } = await apiReorder(blob, filename, roOrder);
-      const newUrl = URL.createObjectURL(reordered);
-      if (activeBlob && activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
-      setActiveBlob(reordered); setActiveBlobUrl(newUrl);
-      setRoSuccess(`Reading order saved — ${roResult?.changes_made || 0} element${roResult?.changes_made !== 1 ? "s" : ""} moved.`);
-    } catch (e) { setRoError(String(e.message || e)); }
-    finally { setRoBusy(false); }
-  }
-
   const report = conformance?.report || {};
   const now = new Date().toLocaleString();
   const docTitle = manifest?.document?.title || filename || "Unknown document";
