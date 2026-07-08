@@ -412,6 +412,16 @@ class StructTreeBuilder:
                 tlm = _mat_mul((1, 0, 0, 1, 0, -leading), tlm)
                 tm = tlm
 
+            # --- strip PRE-EXISTING marked-content operators ---
+            # Rebuild mode replaces the whole structure tree, so any BMC/BDC/EMC
+            # already in the stream (e.g. author-marked /Artifact headers, or
+            # MCIDs pointing at the discarded tree) is stale. Left in place they
+            # interleave illegally with the groups we emit (veraPDF 7.1-1/7.1-2:
+            # tagged content inside Artifact and vice versa). We re-mark every
+            # operator ourselves, so dropping them loses nothing.
+            if op in ("BMC", "BDC", "EMC"):
+                continue
+
             # --- barriers force-close marked content (keep MC / BT-ET / q-Q
             #     properly nested) ---
             if op in BARRIERS:

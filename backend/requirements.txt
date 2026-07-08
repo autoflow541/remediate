@@ -22,5 +22,10 @@ Pillow>=10.0.0             # Required by pytesseract for image handling
 # --- Sprint 2: Language detection (WCAG 3.1.2) ---
 langdetect>=1.0.9          # Per-section language detection for /Lang attributes
 
+# --- Font embedding (veraPDF 7.21.5 glyph-width consistency) ---
+# Required to subset fonts and mirror hmtx widths into /Widths. Without it,
+# font_embed refuses to embed (fail-safe) rather than emit width mismatches.
+fonttools>=4.50.0
+
 # Note: veraPDF is a Java tool installed in the Docker image (not a pip package).
 # Note: tesseract-ocr binary is installed in the Docker image via apt.

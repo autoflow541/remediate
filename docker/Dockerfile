@@ -37,6 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip \
         ca-certificates \
         fontconfig \
+        fonts-liberation \
+        fonts-dejavu-core \
         libgl1 \
         libglib2.0-0 \
         tesseract-ocr \

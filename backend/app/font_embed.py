@@ -225,11 +225,16 @@ def _extract_widths_from_ttf(
         return []
 
 
-def _set_font_widths(pdf, obj, font_data: bytes) -> None:
+def _set_font_widths(pdf, obj, font_data: bytes) -> bool:
     """Rewrite the font dict's /FirstChar, /LastChar, /Widths from the embedded TTF.
 
     This makes the declared widths consistent with the embedded font program,
     satisfying veraPDF clause 7.21.5.
+
+    Returns True only if the /Widths array was actually written. Callers MUST
+    treat False as "do not embed": embedding a font program whose widths we
+    cannot mirror into the font dict produces one 7.21.5 failure per glyph —
+    far worse than the single not-embedded failure it was meant to fix.
     """
     try:
         first_char = int(obj.get("/FirstChar", 32))
@@ -245,8 +250,30 @@ def _set_font_widths(pdf, obj, font_data: bytes) -> None:
             obj[_pik.Name("/LastChar")] = last_char
             obj[_pik.Name("/Widths")] = _pik.Array(widths)
             log.debug("font_embed: rewrote /Widths (%d entries, fc=%d)", len(widths), first_char)
+            return True
+        return False
     except Exception as exc:
         log.debug("font_embed: set_font_widths failed: %s", exc)
+        return False
+
+
+def _can_extract_widths(font_data: bytes) -> bool:
+    """Cheap pre-flight: can we produce a correct /Widths array for this font?"""
+    return bool(_extract_widths_from_ttf(font_data, 32, 33))
+
+
+def _set_winansi_encoding(obj) -> None:
+    """Ensure a non-symbolic TrueType font declares WinAnsiEncoding.
+
+    veraPDF 7.21.6: all non-symbolic TrueType fonts shall have MacRomanEncoding
+    or WinAnsiEncoding. Our subset/width pipeline is WinAnsi-based, so that is
+    the consistent choice. Existing dict-based /Encoding (with /Differences) is
+    left alone.
+    """
+    import pikepdf as _pik
+    enc = obj.get("/Encoding")
+    if enc is None or isinstance(enc, _pik.Name):
+        obj[_pik.Name("/Encoding")] = _pik.Name("/WinAnsiEncoding")
 
 
 def _make_tounicode_cmap(encoding_map: dict[int, int] | None = None) -> bytes:
@@ -312,6 +339,16 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                     base_font = str(obj.get("/BaseFont", "")).lstrip("/")
                     if not base_font or base_font in seen:
                         continue
+                    # Composite (Type0/CID) and subset fonts ("ABCDEF+Name") are
+                    # untouchable: their glyph IDs, CMaps and width tables are
+                    # specific to the exact embedded program. Substituting a
+                    # system font or rewriting /Widths on them breaks every
+                    # glyph reference (observed: 4 -> 516 veraPDF failures on a
+                    # document with subset TrueType fonts).
+                    subtype = str(obj.get("/Subtype", ""))
+                    if subtype == "/Type0" or "+" in base_font:
+                        log.debug("font_embed: skipping %r (%s) — subset/composite", base_font, subtype)
+                        continue
                     # Skip if already embedded
                     desc_ref = obj.get("/FontDescriptor")
                     if not desc_ref:
@@ -319,6 +356,15 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                         sys_path = _locate_font_with_fallback(base_font)
                         if sys_path:
                             font_data = _subset_font(sys_path)
+                            if font_data and not _can_extract_widths(font_data):
+                                # Fail-safe: embedding without a matching /Widths
+                                # array trades 1 failure for ~77 (veraPDF 7.21.5).
+                                notes.append(
+                                    f"Skipped embedding {base_font}: cannot extract "
+                                    "glyph widths (is fontTools installed?)"
+                                )
+                                log.warning("font_embed: skipping %r — widths unavailable", base_font)
+                                font_data = None
                             if font_data:
                                 fstream = pikepdf.Stream(pdf, font_data)
                                 # Build descriptor using plain dict keys (pikepdf.Integer
@@ -338,6 +384,7 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                                 obj[pikepdf.Name("/FontDescriptor")] = new_desc
                                 obj[pikepdf.Name("/Subtype")] = pikepdf.Name("/TrueType")
                                 _set_font_widths(pdf, obj, font_data)
+                                _set_winansi_encoding(obj)  # veraPDF 7.21.6
                                 seen.add(base_font)
                                 embedded += 1
                                 notes.append(
@@ -372,10 +419,19 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                         sys_path = _locate_font_with_fallback(base_font)
                         if sys_path:
                             font_data = _subset_font(sys_path)
+                            if font_data and not _can_extract_widths(font_data):
+                                notes.append(
+                                    f"Skipped embedding {base_font}: cannot extract "
+                                    "glyph widths (is fontTools installed?)"
+                                )
+                                log.warning("font_embed: skipping %r — widths unavailable", base_font)
+                                font_data = None
                             if font_data:
                                 stream = pikepdf.Stream(pdf, font_data)
                                 desc[pikepdf.Name("/FontFile2")] = stream
                                 _set_font_widths(pdf, obj, font_data)
+                                if str(obj.get("/Subtype", "")) == "/TrueType":
+                                    _set_winansi_encoding(obj)  # veraPDF 7.21.6
                                 seen.add(base_font)
                                 embedded += 1
                                 sub_name = os.path.basename(sys_path)

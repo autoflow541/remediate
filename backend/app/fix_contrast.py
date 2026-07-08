@@ -44,22 +44,44 @@ def _contrast_vs_white(r: float, g: float, b: float) -> float:
     return (WHITE_LUM + 0.05) / (lum + 0.05)
 
 
-def _darken_to_pass(r: float, g: float, b: float) -> tuple[float, float, float]:
+def _quantize(r: float, g: float, b: float) -> tuple[float, float, float]:
+    """Snap to the 8-bit sRGB grid the renderer will actually display.
+
+    Testing the un-quantized float color is how a fix ends up at 4.48:1 instead
+    of 4.5:1 — the search converges to the exact threshold and rounding to
+    #777777 pushes it just under. All pass/fail decisions and the emitted color
+    must therefore live on the quantized grid.
     """
-    Binary-search for the minimum darkening that hits REQUIRED_RATIO against white.
-    Invisible text (1:1 ratio) is excluded upstream by contrast.py — not handled here.
+    return (round(r * 255) / 255, round(g * 255) / 255, round(b * 255) / 255)
+
+
+def _darken_to_pass(
+    r: float, g: float, b: float, required: float = REQUIRED_RATIO
+) -> tuple[float, float, float]:
     """
-    if _contrast_vs_white(r, g, b) >= REQUIRED_RATIO:
-        return r, g, b  # already fine
+    Binary-search for the minimum darkening whose *quantized* color hits
+    ``required`` against white. Invisible text (1:1 ratio) is excluded upstream
+    by contrast.py — not handled here.
+    """
+    q = _quantize(r, g, b)
+    if _contrast_vs_white(*q) >= required:
+        return q  # already fine once snapped to the display grid
 
     lo, hi = 0.0, 1.0
     for _ in range(24):               # 2^-24 ≈ 0.00006% precision
         mid = (lo + hi) / 2.0
-        if _contrast_vs_white(r * mid, g * mid, b * mid) >= REQUIRED_RATIO:
+        if _contrast_vs_white(*_quantize(r * mid, g * mid, b * mid)) >= required:
             lo = mid
         else:
             hi = mid
-    return r * lo, g * lo, b * lo
+    out = _quantize(r * lo, g * lo, b * lo)
+    # Belt-and-suspenders: if grid rounding still lands a hair short, walk each
+    # channel down one 8-bit step until the quantized color passes.
+    for _ in range(8):
+        if _contrast_vs_white(*out) >= required:
+            break
+        out = tuple(max(0.0, c - 1 / 255) for c in out)  # type: ignore[assignment]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -120,18 +142,18 @@ class _FillColor:
             # Spot / ICC colour — cannot reliably convert to RGB
             self.unknown = True
 
-    def needs_fix(self) -> bool:
+    def needs_fix(self, required: float = REQUIRED_RATIO) -> bool:
         if self.unknown:
             return True
-        return _contrast_vs_white(*self.rgb) < REQUIRED_RATIO
+        return _contrast_vs_white(*_quantize(*self.rgb)) < required
 
-    def fix(self) -> "tuple[float,float,float] | None":
+    def fix(self, required: float = REQUIRED_RATIO) -> "tuple[float,float,float] | None":
         """Return the adjusted RGB to inject, or None if already passing."""
-        if not self.needs_fix():
+        if not self.needs_fix(required):
             return None
         if self.unknown:
             return (0.0, 0.0, 0.0)      # black fallback for unknown spaces
-        return _darken_to_pass(*self.rgb)
+        return _darken_to_pass(*self.rgb, required=required)
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +185,7 @@ def fix_contrast_colors(in_path: str, out_path: str) -> int:
 
             color = _FillColor()
             in_text = False
+            font_size = 12.0  # current text size via Tf — WCAG large text needs only 3:1
             out: list = []
 
             for instr in instructions:
@@ -178,6 +201,15 @@ def fix_contrast_colors(in_path: str, out_path: str) -> int:
                 # Track fill colour
                 color.apply(op, operands)
 
+                # Track font size (WCAG 1.4.3: >=18pt counts as large -> 3:1).
+                # Bold detection is unreliable at the operator level, so 14pt
+                # bold text is held to the stricter 4.5:1 — conservative.
+                if op == "Tf" and len(operands) == 2:
+                    try:
+                        font_size = float(operands[1])
+                    except (TypeError, ValueError):
+                        pass
+
                 # Text block boundaries
                 if op == "BT":
                     in_text = True
@@ -186,7 +218,8 @@ def fix_contrast_colors(in_path: str, out_path: str) -> int:
 
                 # Inject adjusted colour before failing text-show ops
                 if op in TEXT_SHOW_OPS and in_text:
-                    adjusted = color.fix()
+                    required = 3.0 if font_size >= 18 else REQUIRED_RATIO
+                    adjusted = color.fix(required)
                     if adjusted is not None:
                         r, g, b = adjusted
                         if r == 0.0 and g == 0.0 and b == 0.0:

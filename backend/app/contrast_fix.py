@@ -35,12 +35,21 @@ def _ratio(l1: float, l2: float) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
+def _q8(r: float, g: float, b: float) -> tuple[float, float, float]:
+    """Snap to the 8-bit sRGB grid — the color the renderer actually shows.
+
+    Passing/failing must be judged on the quantized color: a float that meets
+    4.5:1 exactly can round to a shade that measures 4.48:1 on screen.
+    """
+    return (round(r * 255) / 255, round(g * 255) / 255, round(b * 255) / 255)
+
+
 def _darken(r: float, g: float, b: float, bg_lum: float,
              threshold: float = 4.5) -> tuple[float, float, float]:
-    """Scale RGB down until contrast against bg_lum meets threshold."""
+    """Scale RGB down until the QUANTIZED color meets threshold vs bg_lum."""
     for step in range(201):
         s = 1.0 - step * 0.005
-        nr, ng, nb = r * s, g * s, b * s
+        nr, ng, nb = _q8(r * s, g * s, b * s)
         if _ratio(_lum(nr, ng, nb), bg_lum) >= threshold:
             return nr, ng, nb
     return 0.0, 0.0, 0.0   # fallback: black
@@ -163,11 +172,11 @@ def _darken_to_ratio(r: float, g: float, b: float,
     Discretion gate: if achieving 3:1 requires darkening more than 55 %
     of the original value the change would look jarring — return None to skip.
     """
-    if _ratio(_lum(r, g, b), bg_lum) >= target:
-        return None   # already passes, nothing to do
+    if _ratio(_lum(*_q8(r, g, b)), bg_lum) >= target:
+        return None   # already passes on the display grid, nothing to do
     for step in range(201):
         s = 1.0 - step * 0.005
-        nr, ng, nb = r * s, g * s, b * s
+        nr, ng, nb = _q8(r * s, g * s, b * s)
         if _ratio(_lum(nr, ng, nb), bg_lum) >= target:
             if s < 0.45:          # would need >55 % darkening — skip
                 return None
