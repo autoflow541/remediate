@@ -57,16 +57,43 @@ _TYPE1_SUBSTITUTES: dict[str, list[str]] = {
     "arialboldmt":          ["Arial Bold", "Liberation Sans Bold"],
     "arial":                ["Arial", "Liberation Sans", "DejaVu Sans"],
     "arialbold":            ["Arial Bold", "Liberation Sans Bold"],
+    # Windows web fonts → Liberation/DejaVu equivalents
+    "verdana":              ["Liberation Sans", "DejaVu Sans", "FreeSans"],
+    "verdanabold":          ["Liberation Sans Bold", "DejaVu Sans Bold"],
+    "verdanaitalic":        ["Liberation Sans Italic", "DejaVu Sans Oblique"],
+    "verdanabolditalic":    ["Liberation Sans Bold Italic", "DejaVu Sans Bold Oblique"],
+    "georgia":              ["Liberation Serif", "DejaVu Serif", "FreeSerif"],
+    "georgiabold":          ["Liberation Serif Bold", "DejaVu Serif Bold"],
+    "georgiaitalic":        ["Liberation Serif Italic", "DejaVu Serif Italic"],
+    "georgiabolditalic":    ["Liberation Serif Bold Italic", "DejaVu Serif Bold Italic"],
+    "trebuchetms":          ["Liberation Sans", "DejaVu Sans", "FreeSans"],
+    "trebuchetmsbold":      ["Liberation Sans Bold", "DejaVu Sans Bold"],
+    "trebuchetmsitalic":    ["Liberation Sans Italic", "DejaVu Sans Oblique"],
+    "trebuchetmsbolditalic":["Liberation Sans Bold Italic"],
+    "timesnewromanpsmt":    ["Liberation Serif", "DejaVu Serif", "FreeSerif"],
+    "timesnewromanpsboldmt":["Liberation Serif Bold", "DejaVu Serif Bold"],
+    "timesnewromanpsitalicmt":["Liberation Serif Italic", "DejaVu Serif Italic"],
+    "timesnewromanpsbolditalicmt":["Liberation Serif Bold Italic"],
+    "timesnewroman":        ["Liberation Serif", "DejaVu Serif", "FreeSerif"],
+    "timesnewromanbold":    ["Liberation Serif Bold", "DejaVu Serif Bold"],
+    "calibri":              ["Liberation Sans", "DejaVu Sans"],
+    "calibribold":          ["Liberation Sans Bold", "DejaVu Sans Bold"],
+    "cambria":              ["Liberation Serif", "DejaVu Serif"],
+    "cambriabold":          ["Liberation Serif Bold", "DejaVu Serif Bold"],
+    "tahoma":               ["Liberation Sans", "DejaVu Sans"],
+    "tahomabold":           ["Liberation Sans Bold", "DejaVu Sans Bold"],
+    "wingdings":            ["DejaVu Sans", "FreeSans"],
+    "wingdingsregular":     ["DejaVu Sans", "FreeSans"],
 }
 
 
 def _normalise_name(name: str) -> str:
-    """Lowercase, strip hyphens, spaces, commas, subset prefixes."""
+    """Lowercase, strip hyphens, spaces, commas, underscores, subset prefixes."""
     n = name.lower()
     # Strip subset prefix (e.g. "ABCDEF+Helvetica" → "helvetica")
     if "+" in n:
         n = n.split("+", 1)[1]
-    return n.replace("-", "").replace(" ", "").replace(",", "")
+    return n.replace("-", "").replace(" ", "").replace(",", "").replace("_", "")
 
 
 def _locate_system_font(family: str) -> str | None:

@@ -133,8 +133,25 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
     contrast_fixes = 0
     t0 = time.monotonic()
     log.info("REMEDIATE start  file=%r", file.filename)
+    baseline_result = None
+    regression_guard = {"triggered": False}
     try:
-        report = remediate_pdf(in_path, manifest_obj, out_path)
+        # Baseline conformance of the INPUT — feeds the regression guard so we
+        # never hand back a file worse than we received.
+        try:
+            baseline_result = validate_pdf(in_path, flavour=flavour)
+        except Exception:
+            baseline_result = None
+        # Already-tagged PDFs are REPAIRED (structure tree preserved), not
+        # rebuilt from scratch — rebuilding a good tree regresses the document.
+        from .tagged_check import assess_tagging, repair_tagged
+        tag_info = assess_tagging(in_path)
+        if tag_info.get("tagged"):
+            log.info("REMEDIATE repair-mode: %s", tag_info.get("reason"))
+            report = repair_tagged(in_path, out_path, manifest_obj)
+        else:
+            report = remediate_pdf(in_path, manifest_obj, out_path)
+        report["taggingAssessment"] = tag_info
         try:
             from .clean_background import clean_background_fills
             fd3, bg_path = tempfile.mkstemp(suffix=".pdf"); os.close(fd3)
@@ -306,9 +323,25 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
             from .ai_score import score_accessibility
             ai_accessibility_score = score_accessibility(_score_manifest)
         except Exception: pass
+        # ── Regression guard: never hand back a file worse than the input ─────
+        if baseline_result is not None and result.failed_checks > baseline_result.failed_checks:
+            log.warning(
+                "REMEDIATE regression guard fired: input=%d output=%d failed_checks — returning original unchanged",
+                baseline_result.failed_checks, result.failed_checks)
+            import shutil as _shutil
+            _shutil.copyfile(in_path, out_path)
+            regression_guard = {
+                "triggered": True,
+                "inputFailedChecks": baseline_result.failed_checks,
+                "rejectedFailedChecks": result.failed_checks,
+                "note": ("Automated remediation would have increased failing checks; the "
+                         "original file is returned unchanged. Manual remediation is recommended."),
+            }
+            result = baseline_result
         with open(out_path, "rb") as fh: pdf_bytes = fh.read()
         elapsed = time.monotonic() - t0
-        log.info("REMEDIATE done  file=%r  elapsed=%.1fs  compliant=%s", file.filename, elapsed, result.compliant)
+        log.info("REMEDIATE done  file=%r  elapsed=%.1fs  compliant=%s  regression_guard=%s",
+                 file.filename, elapsed, result.compliant, regression_guard["triggered"])
     except WritebackError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except VeraPDFError as exc:
@@ -368,6 +401,8 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "tableStructureIssues": table_structure_issues, "tableStructureIssueCount": len(table_structure_issues),
         "languageIssues": language_issues, "languageIssueCount": len(language_issues),
         "aiAccessibilityScore": ai_accessibility_score,
+        "regressionGuard": regression_guard,
+        "remediationMode": report.get("mode", "rebuild"),
     }
     headers = {
         "Content-Disposition": f'attachment; filename="{base}.remediated.pdf"',

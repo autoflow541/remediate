@@ -28,3 +28,6 @@ Thumbs.db
 remediated_*.pdf
 **/headers.txt
 samples/_lab_*.py
+
+# Vite dev-server temp files
+frontend/*.timestamp-*.mjs
