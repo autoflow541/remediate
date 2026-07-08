@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from .autotag import AutotagError, autotag_pdf
 from .manifest import count_nodes
-from .validate import DEFAULT_FLAVOUR, KNOWN_FLAVOURS, VeraPDFError, get_verapdf_version, validate_pdf
+from .validate import DEFAULT_FLAVOUR, KNOWN_FLAVOURS, VeraPDFError, get_verapdf_version, validate_pdf, safe_validate_pdf
 from .writeback import WritebackError, remediate_pdf
 
 _API_KEY = os.environ.get("API_KEY", "")  # empty string = open access (no auth required)
@@ -99,9 +99,10 @@ def validate(file: UploadFile = File(...), flavour: str = Form(DEFAULT_FLAVOUR))
         raise HTTPException(status_code=400, detail=f"Unknown flavour {flavour!r}.")
     path = _save_upload(file)
     try:
-        result = validate_pdf(path, flavour=flavour)
-    except VeraPDFError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # safe_validate_pdf never raises for a veraPDF internal crash — it
+        # returns an "unavailable" result so /validate answers 200 with
+        # validation_error instead of a 500.
+        result = safe_validate_pdf(path, flavour=flavour)
     finally:
         if os.path.exists(path): os.unlink(path)
     return JSONResponse(result.to_dict())
@@ -171,7 +172,7 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
             from .form_fields import remediate_form_fields
             form_total, form_fixed, form_fields = remediate_form_fields(out_path)
         except Exception: pass
-        result = validate_pdf(out_path, flavour=flavour)
+        result = safe_validate_pdf(out_path, flavour=flavour)
         contrast_failures: list = []
         try:
             from .contrast import check_contrast
@@ -403,6 +404,8 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "aiAccessibilityScore": ai_accessibility_score,
         "regressionGuard": regression_guard,
         "remediationMode": report.get("mode", "rebuild"),
+        "validationError": result.validation_error,
+        "validationComplete": result.validation_error is None,
     }
     headers = {
         "Content-Disposition": f'attachment; filename="{base}.remediated.pdf"',

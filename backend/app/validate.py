@@ -76,10 +76,24 @@ class ValidationResult:
     # Only the failed rules, sorted by clause — that is what the ledger acts on.
     failures: list[RuleResult] = field(default_factory=list)
     verapdf_version: str | None = None
+    # Set when veraPDF could not process the file at all (its own internal
+    # crash — e.g. a Rhino rule ArrayIndexOutOfBounds on a pathological doc).
+    # ``compliant`` is then meaningless; callers should treat conformance as
+    # UNKNOWN rather than pass/fail.
+    validation_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d
+
+    @classmethod
+    def unavailable(cls, flavour: str, error: str) -> "ValidationResult":
+        """Build a result meaning 'veraPDF could not validate this file'."""
+        return cls(
+            compliant=False, flavour=flavour,
+            passed_rules=0, failed_rules=0, passed_checks=0, failed_checks=0,
+            failures=[], validation_error=error,
+        )
 
 
 def find_verapdf() -> str:
@@ -288,6 +302,30 @@ def validate_pdf(
         )
 
     return _parse_report(proc.stdout, flavour)
+
+
+def safe_validate_pdf(
+    pdf_path: str,
+    flavour: str = DEFAULT_FLAVOUR,
+    timeout: int = DEFAULT_TIMEOUT,
+    verapdf_path: str | None = None,
+) -> ValidationResult:
+    """Like ``validate_pdf`` but never raises for a veraPDF processing crash.
+
+    Some real-world PDFs make veraPDF itself throw (a Rhino rule
+    ArrayIndexOutOfBounds, an OOM, a timeout). That is not a reason to fail the
+    whole request — the remediation still happened. On such a crash this returns
+    a ``ValidationResult.unavailable(...)`` so callers can report conformance as
+    UNKNOWN and still hand back the file.
+    """
+    try:
+        return validate_pdf(pdf_path, flavour=flavour, timeout=timeout,
+                            verapdf_path=verapdf_path)
+    except VeraPDFError as exc:
+        return ValidationResult.unavailable(
+            KNOWN_FLAVOURS.get(flavour, flavour),
+            f"veraPDF could not process this file: {str(exc)[:300]}",
+        )
 
 
 def get_verapdf_version(verapdf_path: str | None = None) -> str | None:
