@@ -99,6 +99,19 @@ export async function quickfix(pdfBlob, filename) {
   return { blob, result };
 }
 
+/**
+ * AI visual review — Claude looks at rendered pages + the structure tree and
+ * flags the human-judgment items (alt text accuracy, reading order, headings,
+ * decorative choices). Assistive triage only; never replaces human review.
+ */
+export async function visualCheck(pdfBlob, filename) {
+  const fd = new FormData();
+  fd.append("file", pdfBlob, filename || "document.pdf");
+  const res = await fetch(url("/visual-check"), { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await errText(res, "visual-check"));
+  return res.json();
+}
+
 export async function getReadingOrder(pdfBlob, filename) {
   const fd = new FormData();
   fd.append("file", pdfBlob, filename || "document.pdf");

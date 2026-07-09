@@ -471,6 +471,24 @@ def patch(
         "X-Patch-Result": json.dumps(result),
     })
 
+@app.post("/visual-check", tags=["core"], summary="AI visual review of the human-judgment checkpoints (alt text accuracy, reading order, headings, decorative choices)")
+def visual_check(file: UploadFile = File(...), max_pages: int = Form(6)) -> JSONResponse:
+    """Render the (remediated) PDF's pages and have Claude review the judgment
+    areas automated validators can't verify — whether alt text matches the
+    images, whether the reading order is visually sensible, whether headings
+    and decorative choices look right. Returns per-item verdicts that triage
+    what a human reviewer should confirm. Assistive only: it never replaces
+    human verification or changes the conformance result."""
+    in_path = _save_upload(file)
+    try:
+        from .ai_visual_check import run_visual_check
+        result = run_visual_check(in_path, max_pages=max(1, min(int(max_pages), 12)))
+    finally:
+        if os.path.exists(in_path):
+            os.unlink(in_path)
+    return JSONResponse(result)
+
+
 @app.post("/reading-order", tags=["reorder"], summary="Extract the current reading order from a PDF's structure tree")
 def reading_order_get(file: UploadFile = File(...)) -> JSONResponse:
     in_path = _save_upload(file)

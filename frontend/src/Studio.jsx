@@ -1224,7 +1224,29 @@ function DoneScreen({ result, onReset }) {
     && headingIssueCount === 0 && labelNameIssueCount === 0
     && metadataErrors.length === 0 && fontIssues.filter(i => i.severity === "error").length === 0;
   const [showPreview, setShowPreview] = useState(true);
+  // AI visual review of the human-judgment checkpoints (assistive triage only)
+  const [vcResult, setVcResult] = useState(null);
+  const [vcBusy, setVcBusy] = useState(false);
+  const [vcError, setVcError] = useState("");
   const headingRef = useRef();
+
+  const handleVisualCheck = async () => {
+    setVcBusy(true);
+    setVcError("");
+    try {
+      const blob = await (await fetch(downloadUrl)).blob();
+      const res = await api.visualCheck(blob, filename);
+      if (!res.available) {
+        setVcError(res.reason || "AI visual review is unavailable on this engine.");
+      } else {
+        setVcResult(res);
+      }
+    } catch (e) {
+      setVcError(String(e.message || e));
+    } finally {
+      setVcBusy(false);
+    }
+  };
 
   useEffect(() => { headingRef.current?.focus(); }, []);
 
@@ -1704,6 +1726,56 @@ function DoneScreen({ result, onReset }) {
               {qfResult.errors?.length > 0 && (
                 <span className="qf-chip qf-chip--warn">{qfResult.errors.length} step(s) skipped</span>
               )}
+            </div>
+          )}
+        </div>
+
+        <div className="vc-panel">
+          <div className="vc-head">
+            <strong>AI visual review</strong>
+            <span className="vc-sub">
+              Claude looks at the rendered pages and flags what a human should
+              verify — alt text accuracy, reading order, headings, decorative
+              choices. Assists your review; doesn't replace it.
+            </span>
+          </div>
+          {!vcResult && (
+            <button className="ghost" onClick={handleVisualCheck} disabled={vcBusy}
+                    aria-label="Run AI visual review of human-judgment checkpoints">
+              {vcBusy ? "Reviewing pages… (can take a minute)" : "Run AI visual review"}
+            </button>
+          )}
+          {vcError && <div className="vc-error" role="alert">{vcError}</div>}
+          {vcResult && (
+            <div className="vc-results">
+              <div className="vc-counts" role="status">
+                <span className="vc-chip vc-chip--bad">{vcResult.counts?.likely_problem ?? 0} likely problems</span>
+                <span className="vc-chip vc-chip--warn">{vcResult.counts?.needs_human ?? 0} need human review</span>
+                <span className="vc-chip vc-chip--good">{vcResult.counts?.looks_good ?? 0} look right</span>
+                <span className="vc-meta">
+                  {vcResult.pagesReviewed} of {vcResult.totalPages} page{vcResult.totalPages !== 1 ? "s" : ""} reviewed
+                </span>
+              </div>
+              {vcResult.summary && <p className="vc-summary">{vcResult.summary}</p>}
+              <ul className="vc-items">
+                {[...(vcResult.items || [])]
+                  .sort((a, b) => {
+                    const rank = { likely_problem: 0, needs_human: 1, looks_good: 2 };
+                    return (rank[a.verdict] ?? 3) - (rank[b.verdict] ?? 3);
+                  })
+                  .map((it, i) => (
+                    <li key={i} className={`vc-item vc-item--${it.verdict}`}>
+                      <span className="vc-item-mark" aria-hidden="true">
+                        {it.verdict === "likely_problem" ? "✗" : it.verdict === "needs_human" ? "👁" : "✓"}
+                      </span>
+                      <span>
+                        <strong>{String(it.check || "").replace(/_/g, " ")}</strong>
+                        {it.page > 0 ? ` — page ${it.page}` : ""}: {it.detail}
+                      </span>
+                    </li>
+                  ))}
+              </ul>
+              <p className="vc-disclaimer">{vcResult.disclaimer}</p>
             </div>
           )}
         </div>

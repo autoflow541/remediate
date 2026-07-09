@@ -153,6 +153,28 @@ textarea { resize: vertical; min-height: 80px; }
 .verify-warn { background: rgba(210,153,34,.08); border: 1px solid var(--warn); border-radius: 8px; padding: 14px; margin: 4px 0 16px; font-size: 13px; text-align: left; }
 .verify-warn strong { color: var(--warn); display: block; margin-bottom: 6px; font-weight: 600; }
 .verify-warn p { color: var(--muted); margin: 0; line-height: 1.5; }
+
+/* ── AI visual review panel ─────────────────────────────────────────────── */
+.vc-panel { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin: 16px 0; text-align: left; }
+.vc-head { margin-bottom: 12px; }
+.vc-head strong { display: block; font-size: 14px; margin-bottom: 4px; }
+.vc-sub { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.vc-error { color: var(--bad); font-size: 12px; margin-top: 8px; }
+.vc-counts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.vc-chip { font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid; font-weight: 600; }
+.vc-chip--bad  { color: var(--bad);  border-color: rgba(248,81,73,.4);  background: rgba(248,81,73,.08); }
+.vc-chip--warn { color: var(--warn); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.08); }
+.vc-chip--good { color: var(--good); border-color: rgba(63,185,80,.4);  background: rgba(63,185,80,.08); }
+.vc-meta { font-size: 11px; color: var(--muted); }
+.vc-summary { font-size: 13px; color: var(--text); line-height: 1.5; margin-bottom: 10px; }
+.vc-items { list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; padding: 0; }
+.vc-item { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.vc-item strong { color: var(--text); text-transform: capitalize; }
+.vc-item-mark { flex: 0 0 16px; }
+.vc-item--likely_problem .vc-item-mark { color: var(--bad); }
+.vc-item--needs_human .vc-item-mark { color: var(--warn); }
+.vc-item--looks_good .vc-item-mark { color: var(--good); }
+.vc-disclaimer { font-size: 11px; color: var(--muted); opacity: .75; line-height: 1.5; margin: 0; }
 .done-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
 .done-actions a { display: block; text-align: center; background: var(--accent); color: #fff; border-radius: 6px; padding: 12px 28px; font-size: 15px; font-weight: 500; text-decoration: none; }
 .done-actions a:hover { opacity: 0.9; }
