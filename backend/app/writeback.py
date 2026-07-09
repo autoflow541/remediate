@@ -309,14 +309,22 @@ class StructTreeBuilder:
             return
         ocr_stream = pikepdf.Stream(self.pdf, stream_bytes)
         existing = page.obj.get("/Contents")
+        # /Contents may be a single stream OR an array of streams. Check for
+        # the array FIRST: pikepdf's .is_stream raises ValueError ("not a
+        # Dictionary or Stream") when called on an Array, so the old
+        # stream-first order 500'd on any multi-stream page (e.g. Microsoft
+        # Print to PDF output).
         if existing is None:
             page.obj["/Contents"] = ocr_stream
-        elif existing.is_stream:
-            page.obj["/Contents"] = Array([existing, self.pdf.make_indirect(ocr_stream)])
-        else:
+        elif isinstance(existing, pikepdf.Array):
             arr = list(existing)
             arr.append(self.pdf.make_indirect(ocr_stream))
             page.obj["/Contents"] = Array(arr)
+        else:
+            page.obj["/Contents"] = Array([
+                self.pdf.make_indirect(existing),
+                self.pdf.make_indirect(ocr_stream),
+            ])
 
     def remark_page(self, page_index: int, page: pikepdf.Page) -> None:
         # --- Scanned page: inject invisible OCR text layer first ---
