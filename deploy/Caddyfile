@@ -1,20 +1,25 @@
-# Caddy reverse proxy for the PDF remediation engine.
-# Caddy obtains and renews a Let's Encrypt TLS cert automatically.
+# Caddy reverse proxy for pdf.auto-flow.co — matches /etc/caddy/Caddyfile on the VM.
 #
-# Domain: pdf.auto-flow.co → 64.111.99.41 (DreamCompute VM)
-# Port 80 and 443 are open in the DreamCompute default security group.
+# Routing rule: all non-GET requests go to the FastAPI engine (the SPA only
+# serves GETs), so NEW POST ENDPOINTS NEVER NEED A CADDYFILE EDIT. Only the
+# GET-able API paths are listed explicitly.
 #
-# Start: sudo caddy start --config /path/to/Caddyfile
-# Reload after edits: sudo caddy reload --config /path/to/Caddyfile
+# Reload after edits: sudo systemctl reload caddy
 
 pdf.auto-flow.co {
-    # API routes → FastAPI engine
-    @api path /health /health/* /validate /validate/* /autotag /autotag/* /remediate /remediate/*
-    handle @api {
+    # GET API routes -> FastAPI engine
+    @apiGet path /health /health/* /docs /docs/* /redoc /redoc/* /openapi.json
+    handle @apiGet {
         reverse_proxy localhost:8000
     }
 
-    # Everything else → React SPA
+    # All non-GET requests are API calls -> engine
+    @apiWrite method POST PUT DELETE PATCH
+    handle @apiWrite {
+        reverse_proxy localhost:8000
+    }
+
+    # Everything else -> React SPA
     handle {
         root * /srv/frontend
         try_files {path} /index.html
