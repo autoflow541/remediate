@@ -297,6 +297,21 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
             try:
                 result = validate_pdf(out_path, flavour=flavour)
             except Exception: pass
+        # ── AI visual review + auto-fix ───────────────────────────────────────
+        # Claude reviews the rendered result and fixes the confident visual
+        # mismatches (mis-tagged headings, wrong alt, title) in place; items it
+        # can't fix mechanically come back under visual_review["remaining"].
+        visual_review: dict = {}
+        try:
+            from .ai_visual_fix import run_visual_fix
+            visual_review = run_visual_fix(out_path)
+            if visual_review.get("applied"):
+                log.info("REMEDIATE visual-fix applied %d fix(es)", len(visual_review["applied"]))
+                try:
+                    result = safe_validate_pdf(out_path, flavour=flavour)
+                except Exception: pass
+        except Exception as _vf_exc:
+            log.warning("visual fix skipped: %s", _vf_exc)
         ocg_issues: list = []
         try:
             from .ocg_check import check_optional_content; ocg_issues = check_optional_content(out_path)
@@ -406,6 +421,7 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "remediationMode": report.get("mode", "rebuild"),
         "validationError": result.validation_error,
         "validationComplete": result.validation_error is None,
+        "visualReview": visual_review,
     }
     headers = {
         "Content-Disposition": f'attachment; filename="{base}.remediated.pdf"',
