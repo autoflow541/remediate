@@ -31,3 +31,4 @@ samples/_lab_*.py
 
 # Vite dev-server temp files
 frontend/*.timestamp-*.mjs
+gitpush.log
