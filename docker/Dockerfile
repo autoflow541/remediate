@@ -14,9 +14,12 @@
 FROM python:3.12-slim
 
 # veraPDF release to install. greenfield = the open-source veraPDF build.
-ARG VERAPDF_VERSION=1.26.2
-# The minor-version folder on the download server (e.g. 1.26 for 1.26.2).
-ARG VERAPDF_MINOR=1.26
+# 1.30.2 (2026-06) fixes rule-engine crashes (Rhino ArrayIndexOutOfBounds) that
+# 1.26 hit on some real-world table-heavy documents, which made conformance
+# unverifiable for those files.
+ARG VERAPDF_VERSION=1.30.2
+# The minor-version folder on the download server (e.g. 1.30 for 1.30.2).
+ARG VERAPDF_MINOR=1.30
 # Temurin 11 JRE. The veraPDF 1.26 IzPack installer throws
 # ArrayIndexOutOfBoundsException under JDK 17+, so we pin Java 11 for both the
 # install step and the runtime (veraPDF and OpenDataLoader both support 11+).
