@@ -395,6 +395,10 @@ function ProcessingScreen({ message }) {
       <div role="status" aria-live="polite">
         <div className="spinner" aria-hidden="true" />
         <p className="processing-message">{message}</p>
+        <p className="processing-note">
+          This usually takes about a minute — scanned documents can take two,
+          while OCR and the AI visual review run. Keep this tab open.
+        </p>
       </div>
     </main>
   );
