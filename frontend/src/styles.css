@@ -148,7 +148,11 @@ textarea { resize: vertical; min-height: 80px; }
 .done-icon { font-size: 56px; margin-bottom: 16px; display: block; text-align: center; }
 .done-headline { font-size: 22px; font-weight: 700; margin-bottom: 6px; text-align: center; }
 .done-score { font-size: 52px; font-weight: 800; color: var(--good); line-height: 1; margin: 12px 0 4px; text-align: center; }
-.done-score-label { font-size: 13px; color: var(--muted); margin-bottom: 20px; text-align: center; }
+.done-score-label { font-size: 13px; color: var(--muted); margin-bottom: 6px; text-align: center; }
+.done-score-note { font-size: 12px; color: var(--muted); margin: 0 auto 20px; text-align: center; max-width: 400px; line-height: 1.5; opacity: .85; }
+.verify-warn { background: rgba(210,153,34,.08); border: 1px solid var(--warn); border-radius: 8px; padding: 14px; margin: 4px 0 16px; font-size: 13px; text-align: left; }
+.verify-warn strong { color: var(--warn); display: block; margin-bottom: 6px; font-weight: 600; }
+.verify-warn p { color: var(--muted); margin: 0; line-height: 1.5; }
 .done-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
 .done-actions a { display: block; text-align: center; background: var(--accent); color: #fff; border-radius: 6px; padding: 12px 28px; font-size: 15px; font-weight: 500; text-decoration: none; }
 .done-actions a:hover { opacity: 0.9; }

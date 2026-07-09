@@ -122,6 +122,9 @@ export default function App() {
             const { score: s } = scoreManifest(m, { contrastPassed });
             let base = contrastCount > 0 ? Math.min(s, 85) : s;
             if (!conformance?.compliant && (conformance?.failedRules ?? 0) > 0) base = Math.min(base, 94);
+            // veraPDF itself crashed on this file: conformance is UNKNOWN, so a
+            // high score would be a claim we can't back.
+            if (conformance?.validationComplete === false) base = Math.min(base, 90);
             if (fontErrorCount > 0)      base = Math.min(base, 80);
             if (orphanedPages > 0)       base = Math.min(base, 80);
             if (metadataErrorCount > 0)  base = Math.min(base, 90);
@@ -243,6 +246,8 @@ export default function App() {
           const { score: s } = scoreManifest(cleanManifest, { contrastPassed });
           let base = contrastCount > 0 ? Math.min(s, 85) : s;
           if (!conformance?.compliant && (conformance?.failedRules ?? 0) > 0) base = Math.min(base, 94);
+          // veraPDF crashed on this file — conformance unknown, don't claim high.
+          if (conformance?.validationComplete === false) base = Math.min(base, 90);
           if (fontErrorCount > 0)     base = Math.min(base, 80);
           if (orphanedPages > 0)      base = Math.min(base, 80);
           if (metadataErrorCount > 0) base = Math.min(base, 90);
@@ -732,11 +737,14 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
   const labelNameIssuesR = conformance?.labelNameIssues || [];
   const aiStatsR = manifest?.source?.aiAnalysis || {};
 
+  const validationCompleteR = conformance?.validationComplete !== false;
   const rows = [
     ["Document title",       docTitle,                              true],
     ["Document language",    lang,                                  !!lang && lang !== "Not set"],
-    ["veraPDF compliant",    conformance?.compliant ? "Yes" : "No", conformance?.compliant],
-    ["Conformance score",    `${score}%`,                           score === 100],
+    ["Automated verification (veraPDF) ran to completion",
+       validationCompleteR ? "Yes" : "No — conformance unverified",  validationCompleteR],
+    ["veraPDF compliant",    validationCompleteR ? (conformance?.compliant ? "Yes" : "No") : "Unknown (verification unavailable)", conformance?.compliant && validationCompleteR],
+    ["Automated checks score", `${score}%`,                         score === 100],
     ["Structure elements",   report.elements || 0,                  (report.elements || 0) > 0],
     ["Bookmarks created",    (report.bookmarks || 0) > 0 ? report.bookmarks : "N/A", true],
     ["Table headers tagged", report.headers || 0,                   true],
@@ -900,7 +908,19 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
 <body>
 <h1>PDF Accessibility Audit Report</h1>
 <p class="meta">Generated: ${now} &nbsp;|&nbsp; File: ${escHtml(filename || "unknown")}</p>
-<div class="score-badge">${score}% WCAG 2.2 AA</div>
+<div class="score-badge">${score}% — automated WCAG 2.2 AA checks</div>
+${validationCompleteR ? "" : `<div style="background:#fef3c7;border:1px solid #d97706;border-radius:8px;padding:12px 16px;margin:0 0 20px;color:#92400e">
+<strong>Automated verification did not complete.</strong> veraPDF was unable to process this
+file, so PDF/UA-1 conformance is unverified. Review this document manually before relying on it.
+</div>`}
+<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;margin:0 0 20px;color:#1e40af;font-size:.875rem">
+<strong>Scope of this report.</strong> The results below cover the machine-checkable
+requirements of WCAG 2.2 AA and PDF/UA-1. Several WCAG requirements are judgment calls
+that no automated tool can certify — whether alt text is <em>meaningful</em>, whether the
+reading order is <em>correct</em>, and whether headings reflect the document's real
+structure. A human reviewer should confirm those before treating this document as fully
+conformant.
+</div>
 <h2>Summary</h2>
 <table>
   <thead><tr><th>Check</th><th>Result</th><th>Status</th></tr></thead>
@@ -1196,7 +1216,11 @@ function DoneScreen({ result, onReset }) {
   const tableStructureIssueCount = conformance?.tableStructureIssueCount || 0;
   const languageIssues = conformance?.languageIssues || [];
   const languageIssueCount = conformance?.languageIssueCount || 0;
-  const pass = conformance?.compliant && score === 100 && contrastCount === 0 && linkCount === 0
+  // veraPDF itself failed to process the file (its own crash, not a finding):
+  // conformance is UNKNOWN and nothing on this screen may read as a pass.
+  const validationComplete = conformance?.validationComplete !== false;
+  const pass = validationComplete
+    && conformance?.compliant && score === 100 && contrastCount === 0 && linkCount === 0
     && headingIssueCount === 0 && labelNameIssueCount === 0
     && metadataErrors.length === 0 && fontIssues.filter(i => i.severity === "error").length === 0;
   const [showPreview, setShowPreview] = useState(true);
@@ -1270,18 +1294,38 @@ function DoneScreen({ result, onReset }) {
         <h1 ref={headingRef} tabIndex={-1} className="done-headline">{pass ? "PDF is accessible" : "PDF remediated"}</h1>
         {score != null && (
           <>
-            <div className="done-score" aria-label={`Conformance score ${score} percent`}>{score}%</div>
-            <p className="done-score-label">WCAG 2.2 AA conformance</p>
+            <div className="done-score" aria-label={`Automated checks score ${score} percent`}>{score}%</div>
+            <p className="done-score-label">automated WCAG 2.2 AA checks{validationComplete ? "" : " (unverified)"}</p>
+            <p className="done-score-note">
+              Automated checks can't judge everything — a human should confirm alt text,
+              reading order, and heading choices for full WCAG conformance.
+            </p>
           </>
         )}
 
-        {conformance && (
+        {!validationComplete && (
+          <div className="verify-warn" role="alert">
+            <strong>Automated verification couldn't complete.</strong>
+            <p>
+              The remediation was applied, but veraPDF was unable to process this file to
+              confirm PDF/UA-1 conformance{conformance?.validationError ? " (it reported an internal error)" : ""}.
+              Treat this document as unverified and review it manually.
+            </p>
+          </div>
+        )}
+
+        {conformance && validationComplete && (
           <div className={`verapdf-badge ${conformance.compliant ? "verapdf-pass" : "verapdf-fail"}`}
                role="status"
-               aria-label={conformance.compliant ? "PDF/UA-1 passed" : `PDF/UA-1: ${conformance.failedRules} rule${conformance.failedRules !== 1 ? "s" : ""} need fixing`}>
+               aria-label={conformance.compliant ? "PDF/UA-1 passed" : `PDF/UA-1: ${conformance.failedRules} rule${conformance.failedRules !== 1 ? "s" : ""} still failing`}>
             {conformance.compliant
               ? <><span aria-hidden="true">✓</span> PDF/UA-1 Passed</>
-              : <>PDF/UA-1: {conformance.failedRules} rule{conformance.failedRules !== 1 ? "s" : ""} need fixing — Quick Fix All handles this</>}
+              : <>PDF/UA-1: {conformance.failedRules} rule{conformance.failedRules !== 1 ? "s" : ""} still failing — try Quick Fix All or review manually</>}
+          </div>
+        )}
+        {conformance && !validationComplete && (
+          <div className="verapdf-badge verapdf-fail" role="status" aria-label="PDF/UA-1 conformance unverified">
+            PDF/UA-1: verification unavailable for this file
           </div>
         )}
         {patchSuccess && <div className="patch-success" role="status"><span aria-hidden="true">✓ </span>{patchSuccess}</div>}
