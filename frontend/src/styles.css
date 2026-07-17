@@ -86,6 +86,18 @@ textarea { resize: vertical; min-height: 80px; }
   .upload-paths-divider span { padding: 0 8px; }
 }
 
+/* Single-path upload screen */
+.upload-headline { font-size: 30px; font-weight: 700; margin-bottom: 10px; text-align: center; }
+.app-tagline { font-size: 14.5px; color: var(--muted); max-width: 520px; margin: 0 auto 26px; line-height: 1.6; text-align: center; }
+.askme { display: flex; gap: 10px; align-items: flex-start; margin: 18px auto 0; max-width: 460px; text-align: left; font-size: 13.5px; cursor: pointer; }
+.askme input[type="checkbox"] { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--accent-bright); cursor: pointer; }
+.askme-sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.qf-autonote { font-size: 12.5px; color: var(--muted); text-align: center; margin: 10px 0 4px; }
+.fixed-details { margin-top: 14px; }
+.fixed-details summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--muted); padding: 8px 0; }
+.fixed-details summary:hover { color: var(--text); }
+.fixed-details[open] summary { color: var(--text); }
+
 /* Legacy drop-zone (kept for batch screen) */
 .drop-zone {
   border: 2px dashed var(--border); border-radius: 12px; padding: 52px 32px;

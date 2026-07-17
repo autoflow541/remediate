@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import * as api from "./api";
-import { API_BASE, patch as apiPatch, quickfix as apiQuickfix, getReadingOrder, reorder as apiReorder } from "./api";
+import { API_BASE, patch as apiPatch, getReadingOrder, reorder as apiReorder } from "./api";
 import { fixHeadingOrder, scoreManifest } from "./manifest";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ export default function App() {
   }, [screen]);
 
   switch (screen) {
-    case "idle":        return <UploadScreen onFileManual={handleFile} onFileAuto={handleFileAuto} onBatch={() => setScreen("batch")} error={error} />;
+    case "idle":        return <UploadScreen onFile={(f, askMe) => (askMe ? handleFile(f) : handleFileAuto(f))} onBatch={() => setScreen("batch")} error={error} />;
     case "processing":
     case "remediating": return <ProcessingScreen message={progress} />;
     case "hallway":     return <HallwayScreen questions={questions} manifest={manifest} onComplete={handleHallwayComplete} />;
@@ -294,80 +294,64 @@ export default function App() {
 
 // ── Screen: Upload ─────────────────────────────────────────────────────────
 
-function UploadScreen({ onFileManual, onFileAuto, onBatch, error }) {
-  const manualRef = useRef();
-  const autoRef = useRef();
+function UploadScreen({ onFile, onBatch, error }) {
+  const fileRef = useRef();
   const headingRef = useRef();
+  const [askMe, setAskMe] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => { headingRef.current?.focus(); }, []);
 
   const noBackend = !api.HAS_BACKEND;
-
-  const handleDrop = (e, mode) => {
-    e.preventDefault();
-    const f = e.dataTransfer.files[0];
-    if (!f || noBackend) return;
-    mode === "auto" ? onFileAuto(f) : onFileManual(f);
-  };
+  const pick = (f) => { if (f && !noBackend) onFile(f, askMe); };
 
   return (
     <main id="main-content" className="screen screen--upload">
-      <h1 ref={headingRef} tabIndex={-1} className="sr-only">PDF Accessibility Remediation</h1>
-      <p className="app-title" aria-hidden="true">PDF Accessibility Remediation</p>
-      <p className="app-subtitle"><a href="https://auto-flow.co" target="_blank" rel="noopener noreferrer">auto-flow.co</a></p>
+      <h1 ref={headingRef} tabIndex={-1} className="upload-headline">Make your PDF accessible</h1>
+      <p className="app-tagline">
+        Upload a PDF and get back a tagged, screen-reader-ready version — headings,
+        reading order, alt text, contrast, and fonts fixed automatically, then
+        verified against the PDF/UA standard. Free and open source.
+      </p>
 
-      <div className="upload-paths" role="group" aria-label="Choose how to remediate your PDF">
-
-        {/* ── Manual path ── */}
-        <div
-          className="upload-path upload-path--manual"
-          onDragOver={(e) => { e.preventDefault(); }}
-          onDrop={(e) => handleDrop(e, "manual")}
+      <div
+        className={`drop-zone ${dragOver ? "drag-over" : ""}`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); pick(e.dataTransfer.files[0]); }}
+      >
+        <p className="drop-zone-heading">Drop a PDF here</p>
+        <p>or</p>
+        <button
+          className="primary"
+          disabled={noBackend}
+          aria-label="Choose a PDF to make accessible"
+          onClick={() => fileRef.current.click()}
         >
-          <p className="upload-path-icon" aria-hidden="true">🔍</p>
-          <h2 className="upload-path-title">Review &amp; Edit</h2>
-          <p className="upload-path-desc">Review each accessibility decision yourself. Full control over tags, alt text, and reading order.</p>
-          <button
-            className="primary"
-            disabled={noBackend}
-            aria-label="Choose a PDF to remediate manually"
-            onClick={() => manualRef.current.click()}
-          >
-            Choose PDF
-          </button>
-          <input ref={manualRef} type="file" accept="application/pdf" style={{ display: "none" }}
-            onChange={(e) => e.target.files[0] && onFileManual(e.target.files[0])} />
-        </div>
-
-        <div className="upload-paths-divider" aria-hidden="true"><span>or</span></div>
-
-        {/* ── Auto path ── */}
-        <div
-          className="upload-path upload-path--auto"
-          onDragOver={(e) => { e.preventDefault(); }}
-          onDrop={(e) => handleDrop(e, "auto")}
-        >
-          <p className="upload-path-icon" aria-hidden="true">⚡</p>
-          <h2 className="upload-path-title">AI Auto-Fix</h2>
-          <p className="upload-path-desc">AI makes all accessibility decisions. One click to a compliant PDF — no questions asked.</p>
-          <button
-            className="primary upload-path-auto-btn"
-            disabled={noBackend}
-            aria-label="Choose a PDF to auto-fix with AI"
-            onClick={() => autoRef.current.click()}
-          >
-            Choose PDF
-          </button>
-          <input ref={autoRef} type="file" accept="application/pdf" style={{ display: "none" }}
-            onChange={(e) => e.target.files[0] && onFileAuto(e.target.files[0])} />
-        </div>
-
+          Choose PDF
+        </button>
+        <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }}
+          onChange={(e) => { pick(e.target.files[0]); e.target.value = ""; }} />
       </div>
+
+      <label className="askme">
+        <input
+          type="checkbox"
+          checked={askMe}
+          onChange={(e) => setAskMe(e.target.checked)}
+          disabled={noBackend}
+        />
+        <span>
+          Ask me to write the image descriptions and title myself
+          <span className="askme-sub">Otherwise AI drafts them and you can review afterwards.</span>
+        </span>
+      </label>
 
       {noBackend && <p className="err" role="alert">No backend configured. Set VITE_API_BASE to enable remediation.</p>}
       {error && <p className="err" role="alert">{error}</p>}
       <p className="privacy-note">
-        Your file is only sent to the engine during processing. We don't store your documents.
+        Free · open source · your file is processed transiently and never stored ·
+        verified with veraPDF
         {!noBackend && (
           <> · <a href={`${API_BASE}/docs`} target="_blank" rel="noreferrer" className="api-docs-link">API docs ↗</a></>
         )}
@@ -377,6 +361,7 @@ function UploadScreen({ onFileManual, onFileAuto, onBatch, error }) {
           Process multiple PDFs at once
         </button>
       )}
+      <p className="app-subtitle"><a href="https://auto-flow.co" target="_blank" rel="noopener noreferrer">auto-flow.co</a></p>
     </main>
   );
 }
@@ -815,7 +800,7 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
 
   const contrastSection = contrastFailures.length > 0
     ? `<h2>Remaining Contrast Issues (WCAG 1.4.3)</h2>
-       <p>Quick Fix All resolves these automatically — or use the manual path to review each one.</p>
+       <p>Automatic fixes resolved what they could; anything listed here still needs a human decision.</p>
        <table><thead><tr><th>Page</th><th>Text excerpt</th><th>Foreground</th><th>Background</th><th>Ratio</th><th>Required</th></tr></thead><tbody>
        ${contrastFailures.map(f => `<tr><td>${f.page}</td><td>${escHtml((f.text||"").slice(0,60))}</td><td><code>${f.fg}</code></td><td><code>${f.bg}</code></td><td>${f.ratio}:1</td><td>${f.required}:1</td></tr>`).join("\n")}
        </tbody></table>` : "";
@@ -845,14 +830,14 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
 
   const altSection = altIssuesR.length > 0
     ? `<h2>Images Needing Alt Text (WCAG 1.1.1)</h2>
-       <p>The following figures have missing, empty, or non-descriptive alt text. Quick Fix All generates alt text using AI vision. Use the manual path to write your own descriptions.</p>
+       <p>The following figures have missing, empty, or non-descriptive alt text. AI drafted descriptions where it could — review them, or re-run with “Ask me” checked to write your own.</p>
        <table><thead><tr><th>Page</th><th>Issue type</th><th>Current alt text</th><th>Description</th></tr></thead><tbody>
        ${altIssuesR.map(a => `<tr><td>${a.page || "—"}</td><td>${escHtml(a.type)}</td><td><code>${a.alt !== null && a.alt !== undefined ? escHtml(String(a.alt).slice(0,80)) : "(none)"}</code></td><td>${escHtml(a.description)}</td></tr>`).join("\n")}
        </tbody></table>` : "";
 
   const colorOnlySection = colorOnlyR.length > 0
     ? `<h2>Potential Color-Only Information (WCAG 1.4.1)</h2>
-       <p>Color-only patterns detected. Quick Fix All adds WCAG-compliant labels where possible. For charts, the manual path lets you describe each one.</p>
+       <p>Color-only patterns detected. Labels were added automatically where possible; charts may still need a human description.</p>
        <table><thead><tr><th>Page</th><th>Shapes</th><th>Colors detected</th></tr></thead><tbody>
        ${colorOnlyR.map(w => `<tr><td>${w.page}</td><td>${w.swatch_count}</td><td>${w.colors.map(c => `<span style="display:inline-block;width:14px;height:14px;background:${escHtml(c)};border:1px solid #ccc;border-radius:2px;vertical-align:middle;margin-right:3px"></span>${escHtml(c)}`).join(" ")}</td></tr>`).join("\n")}
        </tbody></table>` : "";
@@ -941,7 +926,7 @@ ${altSection}
 ${colorOnlySection}
 ${failureSection}
 ${(conformance?.nontextContrastIssues||[]).length > 0 ? `<h2>Non-text Contrast Issues (WCAG 1.4.11)</h2>
-<p>UI component boundaries and graphical elements require 3:1 contrast ratio. Quick Fix All darkens borders and strokes to meet the threshold.</p>
+<p>UI component boundaries and graphical elements require a 3:1 contrast ratio. Borders and strokes were darkened automatically where possible.</p>
 <table><thead><tr><th>Page</th><th>Type</th><th>Contrast Ratio</th><th>Description</th></tr></thead><tbody>
 ${(conformance?.nontextContrastIssues||[]).slice(0,20).map(n=>`<tr><td>${n.page||""}</td><td>${escHtml(n.type||"")}</td><td>${n.ratio||""}</td><td>${escHtml(n.description||"")}</td></tr>`).join("")}
 </tbody></table>` : ""}
@@ -1078,29 +1063,9 @@ function DoneScreen({ result, onReset }) {
     }
   }
 
-  // ── Quick Fix All ─────────────────────────────────────────────────────
-  const [qfBusy, setQfBusy] = useState(false);
-  // Seed from result.qfResult so auto-quickfix (doRemediate) shows ✓ Applied immediately
-  const [qfResult, setQfResult] = useState(result?.qfResult || null);
-
-  async function handleQuickFix() {
-    setQfBusy(true); setPatchError(""); setPatchSuccess("");
-    try {
-      const blob = await _getCurrentBlob();
-      const { blob: fixed, result: qr } = await apiQuickfix(blob, filename);
-      const newUrl = URL.createObjectURL(fixed);
-      if (activeBlob && activeBlobUrl) URL.revokeObjectURL(activeBlobUrl);
-      setActiveBlob(fixed); setActiveBlobUrl(newUrl);
-      setQfResult(qr);
-      const total = qr?.totalFixes ?? 0;
-      setPatchSuccess(
-        total > 0
-          ? `Quick Fix applied ${total} fix${total !== 1 ? "es" : ""} automatically.`
-          : "Quick Fix ran — no additional fixes needed."
-      );
-    } catch (e) { setPatchError(String(e.message || e)); }
-    finally { setQfBusy(false); }
-  }
+  // Quick Fix runs automatically inside doRemediate — the done screen only
+  // reports its outcome (qf-autonote); there is no manual re-run button.
+  const qfResult = result?.qfResult || null;
 
   // ── Reading order editor ──────────────────────────────────────────────
   const [roOpen, setRoOpen] = useState(false);
@@ -1327,7 +1292,7 @@ function DoneScreen({ result, onReset }) {
                aria-label={conformance.compliant ? "PDF/UA-1 passed" : `PDF/UA-1: ${conformance.failedRules} rule${conformance.failedRules !== 1 ? "s" : ""} still failing`}>
             {conformance.compliant
               ? <><span aria-hidden="true">✓</span> PDF/UA-1 Passed</>
-              : <>PDF/UA-1: {conformance.failedRules} rule{conformance.failedRules !== 1 ? "s" : ""} still failing — try Quick Fix All or review manually</>}
+              : <>PDF/UA-1: {conformance.failedRules} rule{conformance.failedRules !== 1 ? "s" : ""} still failing after automatic fixes — see the audit report for specifics</>}
           </div>
         )}
         {conformance && !validationComplete && (
@@ -1338,10 +1303,39 @@ function DoneScreen({ result, onReset }) {
         {patchSuccess && <div className="patch-success" role="status"><span aria-hidden="true">✓ </span>{patchSuccess}</div>}
         {patchError && <div className="patch-error" role="alert">{patchError}</div>}
 
+        {/* Primary actions live directly under the verdict — the download is
+            the payoff, not the footer. */}
+        <div className="done-actions">
+          <a href={downloadUrl} download={filename} aria-label={`Download ${filename}`}>
+            Download accessible PDF
+          </a>
+          <button className="ghost" onClick={handleAuditDownload} aria-label="Download accessibility audit report as HTML">
+            Download audit report
+          </button>
+          <button className="ghost" onClick={() => setShowPreview(s => !s)} aria-expanded={showPreview}>
+            {showPreview ? "Hide tagged preview" : "View tagged PDF"}
+          </button>
+          <button className="ghost" onClick={onReset}>
+            Remediate another PDF
+          </button>
+        </div>
+
+        {qfResult && (
+          <p className="qf-autonote" role="status">
+            ⚡ {qfResult.totalFixes > 0
+              ? `${qfResult.totalFixes} automatic fix${qfResult.totalFixes !== 1 ? "es" : ""} applied during processing`
+              : "All automatic fixes ran during processing"}
+            {" "}(contrast, headings, table scopes, metadata, fonts, language, alt text).
+          </p>
+        )}
+
         {fixed.length > 0 && (
-          <ul className="fixed-list" aria-label="What was fixed">
-            {fixed.map((item, i) => <li key={i}>{item}</li>)}
-          </ul>
+          <details className="fixed-details">
+            <summary>What was fixed ({fixed.length})</summary>
+            <ul className="fixed-list" aria-label="What was fixed">
+              {fixed.map((item, i) => <li key={i}>{item}</li>)}
+            </ul>
+          </details>
         )}
 
         {contrastCount > 0 && (
@@ -1360,7 +1354,7 @@ function DoneScreen({ result, onReset }) {
         {fontIssues.filter(f => f.severity === "error").length > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{fontIssues.filter(f => f.severity === "error").length} font issue{fontIssues.filter(f => f.severity === "error").length !== 1 ? "s" : ""} to fix (PDF/UA §7.21.3)</strong>
-            <p>These fonts lack a ToUnicode map or are not embedded. Quick Fix All attempts to embed and repair them.</p>
+            <p>These fonts lack a ToUnicode map or are not embedded, and could not be repaired automatically (subset and composite fonts are left untouched to avoid corruption).</p>
             {fontIssues.filter(f => f.severity === "error").slice(0, 5).map((f, i) => (
               <div key={i} className="contrast-item">{f.font_name}: {f.description}</div>
             ))}
@@ -1371,14 +1365,14 @@ function DoneScreen({ result, onReset }) {
           <div className="contrast-warn" role="note">
             <strong>{nontextContrastCount} non-text contrast issue{nontextContrastCount !== 1 ? "s" : ""} (WCAG 1.4.11)</strong>
             {nontextContrastFixed > 0 && <p>{nontextContrastFixed} auto-fixed (borders darkened / near-white fills cleared).</p>}
-            {nontextContrastCount > 0 && <p>Use Quick Fix All to auto-correct remaining issues.</p>}
+            {nontextContrastCount > 0 && <p>These could not be auto-corrected safely; they may need a source-document change.</p>}
           </div>
         )}
 
         {orphanedPages > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{orphanedPages} page{orphanedPages !== 1 ? "s" : ""} with unstructured content (PDF/UA §7.1)</strong>
-            <p>Some content isn't in the structure tree. Quick Fix All and manual re-tagging can resolve this.</p>
+            <p>Some content isn't in the structure tree and may be skipped by screen readers — this usually needs manual re-tagging.</p>
           </div>
         )}
 
@@ -1404,7 +1398,7 @@ function DoneScreen({ result, onReset }) {
         {linkCount > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{linkCount} link{linkCount !== 1 ? "s" : ""} need accessible names (WCAG 2.4.4)</strong>
-            <p>These links have no resolvable URL. Add descriptive text to the link in your source, or use Quick Fix All to apply defaults.</p>
+            <p>These links have no resolvable URL, so descriptive text couldn't be generated. Fix the link text in your source document.</p>
             {linkIssues.slice(0, 4).map((l, i) => (
               <div key={i} className="contrast-item">
                 Page {l.page}: {l.issue}
@@ -1417,7 +1411,7 @@ function DoneScreen({ result, onReset }) {
         {altIssueCount > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{altIssueCount} image{altIssueCount !== 1 ? "s" : ""} need review (WCAG 1.1.1)</strong>
-            <p>These figures need alt text. Quick Fix All generates descriptions using AI vision.</p>
+            <p>These figures still need alt text — AI could not describe them confidently.</p>
             {altIssues.slice(0, 4).map((a, i) => (
               <div key={i} className="contrast-item">
                 {a.page ? `Page ${a.page}: ` : ""}{a.description}
@@ -1430,7 +1424,7 @@ function DoneScreen({ result, onReset }) {
         {colorOnlyCount > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{colorOnlyCount} color-only pattern{colorOnlyCount !== 1 ? "s" : ""} to review (WCAG 1.4.1)</strong>
-            <p>Colored shapes that may convey meaning through color alone. Quick Fix All adds accessible labels where possible.</p>
+            <p>Colored shapes that may convey meaning through color alone. Labels were added automatically where possible; verify the meaning survives without color.</p>
             {colorOnlyWarnings.slice(0, 3).map((w, i) => (
               <div key={i} className="contrast-item">
                 Page {w.page}: {w.swatch_count} shapes — {w.colors.slice(0,5).join(", ")}{w.colors.length > 5 ? "…" : ""}
@@ -1466,7 +1460,7 @@ function DoneScreen({ result, onReset }) {
         {sensoryIssueCount > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{sensoryIssueCount} sensory-only reference{sensoryIssueCount !== 1 ? "s" : ""} to review (WCAG 1.3.3)</strong>
-            <p>Instructions that reference only shape, color, size, or visual position may be inaccessible. Quick Fix All adds accessible labels. For complex references, the manual path lets you review each one.</p>
+            <p>Instructions that reference only shape, color, size, or visual position may be inaccessible. Review these passages — rewording in the source document is the reliable fix.</p>
             {sensoryIssues.slice(0, 4).map((s, i) => (
               <div key={i} className="contrast-item">
                 {s.page ? `Page ${s.page}: ` : ""}"{s.match}"
@@ -1479,7 +1473,7 @@ function DoneScreen({ result, onReset }) {
         {linkTextIssueCount > 0 && (
           <div className="contrast-warn" role="note">
             <strong>{linkTextIssueCount} non-descriptive link{linkTextIssueCount !== 1 ? "s" : ""} to fix (WCAG 2.4.4)</strong>
-            <p>Links with generic text. Quick Fix All rewrites these with AI-generated descriptions based on the link destination.</p>
+            <p>Links with generic text (“click here”). AI rewrote these with descriptive names where the destination was resolvable.</p>
             {linkTextIssues.slice(0, 4).map((l, i) => (
               <div key={i} className="contrast-item">
                 {l.page ? `Page ${l.page}: ` : ""}"{l.linkText}"
@@ -1587,7 +1581,7 @@ function DoneScreen({ result, onReset }) {
             )}
             {nontextContrastIssues.length > 0 && (
               <>
-                <p>{nontextContrastIssues.length} remaining issue{nontextContrastIssues.length !== 1 ? "s" : ""} — run Quick Fix All to auto-correct borders and strokes.</p>
+                <p>{nontextContrastIssues.length} remaining issue{nontextContrastIssues.length !== 1 ? "s" : ""} that couldn't be auto-corrected safely.</p>
                 {nontextContrastIssues.slice(0, 2).map((n, i) => (
                   <div key={i} className="contrast-item">Page {n.page}: {n.description}</div>
                 ))}
@@ -1680,41 +1674,6 @@ function DoneScreen({ result, onReset }) {
           )}
         </div>
 
-        {/* ── Quick Fix All ── */}
-        <div className="quickfix-section">
-          <div className="quickfix-intro">
-            <strong>Quick Fix All</strong>
-            <span>Runs every auto-fix in one pass — contrast, table scopes, heading levels, metadata, language tags, alt text, and veraPDF repairs. AI makes the calls.</span>
-          </div>
-          {qfResult && !qfBusy ? (
-            <span className="quickfix-btn" style={{background:"var(--good)", cursor:"default"}} aria-label="All fixes applied">✓ Applied</span>
-          ) : (
-            <button
-              className="quickfix-btn"
-              onClick={handleQuickFix}
-              disabled={qfBusy || patchBusy}
-              aria-busy={qfBusy}
-            >
-              {qfBusy ? "Fixing…" : "⚡ Quick Fix All"}
-            </button>
-          )}
-          {qfResult && (
-            <div className="quickfix-result" role="status">
-              {Object.entries(qfResult.fixes || {}).map(([k, v]) =>
-                v > 0 ? (
-                  <span key={k} className="qf-chip">{k.replace(/([A-Z])/g, " $1").trim()}: {v}</span>
-                ) : null
-              )}
-              {(qfResult.notes || []).some(n => /compliant/i.test(n)) && (
-                <span className="qf-chip" style={{background:"rgba(63,185,80,.15)", color:"var(--good)", borderColor:"rgba(63,185,80,.3)"}}>PDF/UA-1 ✓</span>
-              )}
-              {qfResult.errors?.length > 0 && (
-                <span className="qf-chip qf-chip--warn">{qfResult.errors.length} step(s) skipped</span>
-              )}
-            </div>
-          )}
-        </div>
-
         {visualReview?.available && (
           <div className="vc-panel">
             <div className="vc-head">
@@ -1766,20 +1725,6 @@ function DoneScreen({ result, onReset }) {
           </div>
         )}
 
-        <div className="done-actions">
-          <a href={downloadUrl} download={filename} aria-label={`Download ${filename}`}>
-            Download accessible PDF
-          </a>
-          <button className="ghost" onClick={handleAuditDownload} aria-label="Download accessibility audit report as HTML">
-            Download audit report
-          </button>
-          <button className="ghost" onClick={() => setShowPreview(s => !s)} aria-expanded={showPreview}>
-            {showPreview ? "Hide tagged preview" : "View tagged PDF"}
-             </button>
-          <button className="ghost" onClick={onReset}>
-            Remediate another PDF
-          </button>
-        </div>
       </div>
 
       {showPreview && manifest && (

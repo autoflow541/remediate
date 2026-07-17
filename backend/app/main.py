@@ -41,7 +41,7 @@ app.add_middleware(
     expose_headers=[
         "X-Conformance","X-VeraPDF-Compliant","X-VeraPDF-Failed-Rules",
         "X-Remediation-Elements","X-Remediation-MCIDs",
-        "X-Patch-Result","X-Reorder-Result","Content-Disposition",
+        "X-Patch-Result","X-Reorder-Result","X-QuickFix-Result","Content-Disposition",
     ],
 )
 
