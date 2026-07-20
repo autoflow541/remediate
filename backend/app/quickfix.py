@@ -197,9 +197,26 @@ def run_quickfix(pdf_path: str) -> dict:
         summary["errors"].append(f"fonts: {exc}")
         _record("fontsEmbedded", 0)
 
-    # ── 7a2. Unmarked-content artifact wrapping (PDF/UA 7.1-3) ───────────────
-    # Repair-mode docs keep their original tree; stray unmarked operators are
-    # wrapped as /Artifact so every painted op is either tagged or artifact.
+    # ── 7a. Structure-tree content repairs (PDF/UA 7.1) ──────────────────────
+    # Order matters: untangle artifact/tagged interleavings first (7.1-1/2),
+    # then reconnect orphaned islands and unreferenced MCIDs (7.1-3), and only
+    # then artifact-wrap whatever is still genuinely unmarked (7.1-3).
+    try:
+        from .interleave_fix import fix_interleaved_marked_content
+        n, notes = fix_interleaved_marked_content(pdf_path)
+        _record("interleavingsFixed", n, notes)
+    except Exception as exc:
+        summary["errors"].append(f"interleave: {exc}")
+        _record("interleavingsFixed", 0)
+
+    try:
+        from .orphan_mcid_fix import adopt_orphaned_mcids
+        n, notes = adopt_orphaned_mcids(pdf_path)
+        _record("orphanedMcidsAdopted", n, notes)
+    except Exception as exc:
+        summary["errors"].append(f"orphan_mcid: {exc}")
+        _record("orphanedMcidsAdopted", 0)
+
     try:
         from .artifact_wrap import wrap_unmarked_content
         n, notes = wrap_unmarked_content(pdf_path)
