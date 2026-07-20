@@ -307,8 +307,8 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         deep_fix: dict = {}
         if not result.compliant:
             try:
-                from .quickfix import run_quickfix
-                deep_fix = run_quickfix(out_path)
+                from .quickfix import run_deep_fix
+                deep_fix = run_deep_fix(out_path)
                 if deep_fix.get("totalFixes"):
                     log.info("REMEDIATE deep-fix applied %s fix(es)", deep_fix["totalFixes"])
                     result = safe_validate_pdf(out_path, flavour=flavour)

@@ -39,6 +39,75 @@ def _try(label: str, fn, *args, **kwargs):
         return None, int((time.perf_counter() - t0) * 1000)
 
 
+def run_deep_fix(pdf_path: str) -> dict:
+    """Fast structure-repair pass for /remediate (in-place).
+
+    Runs ONLY the mechanical structure repairs the main /remediate pipeline
+    doesn't already perform — no background/contrast/font passes (done inline),
+    and no AI stages (the per-figure vision alt and the multi-iteration
+    compliance loop live in run_quickfix and would triple latency; /remediate
+    handles alt via its AI visual review instead). This is what closes
+    repair-mode documents without the ~150s AI cost.
+    """
+    summary: dict = {"ok": True, "fixes": {}, "notes": [], "errors": []}
+
+    def rec(key, fn, *a, **k):
+        try:
+            res = fn(*a, **k)
+            n = res[0] if isinstance(res, tuple) else res
+            notes = res[1] if isinstance(res, tuple) and len(res) > 1 else None
+            summary["fixes"][key] = n if isinstance(n, int) else (n or 0)
+            if notes:
+                summary["notes"].extend(notes)
+        except Exception as exc:
+            summary["errors"].append(f"{key}: {exc}")
+            summary["fixes"][key] = 0
+
+    # Structure-tree content repairs (PDF/UA 7.1), ordered.
+    from .interleave_fix import fix_interleaved_marked_content
+    from .orphan_mcid_fix import adopt_orphaned_mcids
+    from .artifact_wrap import wrap_unmarked_content
+    from .annot_alt_fix import fix_annotation_descriptions
+    from .cidset_fix import remove_incomplete_cidsets
+    from .language_fix import fix_language_tags
+    from .patch_pdf import patch_heading_levels, patch_table_headers
+
+    rec("interleavingsFixed", fix_interleaved_marked_content, pdf_path)
+    rec("orphanedMcidsAdopted", adopt_orphaned_mcids, pdf_path)
+    rec("unmarkedContentWrapped", wrap_unmarked_content, pdf_path)
+    rec("annotDescriptionsAdded", fix_annotation_descriptions, pdf_path)
+    rec("cidsetsRemoved", remove_incomplete_cidsets, pdf_path)
+    rec("langTagsAdded", fix_language_tags, pdf_path)
+    rec("headingsRepaired", lambda p: patch_heading_levels(p).get("repairs_made", 0), pdf_path)
+    rec("tableHeadersScoped", lambda p: patch_table_headers(p).get("cells_tagged", 0), pdf_path)
+
+    # Fill empty Figure /Alt via vision (cheap for text docs, needed for 7.3-1).
+    # Kept from the full quickfix; the multi-iteration AI compliance loop is not.
+    try:
+        from .alt_fix import fix_alt_text
+        rec("altTextGenerated", fix_alt_text, pdf_path)
+    except Exception as exc:
+        summary["errors"].append(f"alt_text: {exc}")
+
+    # Final mechanical veraPDF clause repair on the now-restructured file.
+    try:
+        from .validate import validate_pdf
+        from .verapdf_auto_repair import auto_repair
+        r = validate_pdf(pdf_path)
+        if not r.compliant and r.failures:
+            failures_raw = [f.__dict__ if hasattr(f, "__dict__") else f for f in r.failures]
+            n, notes = auto_repair(pdf_path, failures_raw)
+            summary["fixes"]["verapdfRepairs"] = n
+            if notes:
+                summary["notes"].extend(notes)
+    except Exception as exc:
+        summary["errors"].append(f"verapdf_repair: {exc}")
+
+    summary["totalFixes"] = sum(v for v in summary["fixes"].values() if isinstance(v, int))
+    log.info("deep_fix: %d structure fixes, errors=%d", summary["totalFixes"], len(summary["errors"]))
+    return summary
+
+
 def run_quickfix(pdf_path: str) -> dict:
     """Apply all auto-fixes to pdf_path (in-place).  Return summary dict."""
 
