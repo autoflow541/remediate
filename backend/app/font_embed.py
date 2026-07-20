@@ -57,6 +57,10 @@ _TYPE1_SUBSTITUTES: dict[str, list[str]] = {
     "arialboldmt":          ["Arial Bold", "Liberation Sans Bold"],
     "arial":                ["Arial", "Liberation Sans", "DejaVu Sans"],
     "arialbold":            ["Arial Bold", "Liberation Sans Bold"],
+    "arialitalicmt":        ["Arial Italic", "Liberation Sans Italic", "DejaVu Sans Oblique"],
+    "arialbolditalicmt":    ["Arial Bold Italic", "Liberation Sans Bold Italic", "DejaVu Sans Bold Oblique"],
+    "arialitalic":          ["Arial Italic", "Liberation Sans Italic"],
+    "arialbolditalic":      ["Arial Bold Italic", "Liberation Sans Bold Italic"],
     # Windows web fonts → Liberation/DejaVu equivalents
     "verdana":              ["Liberation Sans", "DejaVu Sans", "FreeSans"],
     "verdanabold":          ["Liberation Sans Bold", "DejaVu Sans Bold"],

@@ -297,6 +297,24 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
             try:
                 result = validate_pdf(out_path, flavour=flavour)
             except Exception: pass
+        # ── Deep-fix pass ─────────────────────────────────────────────────────
+        # If the document still fails veraPDF after the inline fixers, run the
+        # full quickfix chain (annotation/link descriptions, CIDSet, heading
+        # levels, table scope, metadata, fonts, language, AI alt text, veraPDF
+        # auto-repair) server-side. This is what closes repair-mode documents:
+        # their preserved trees carry issues the rebuild path never produces,
+        # and API/batch callers never call /quickfix separately.
+        deep_fix: dict = {}
+        if not result.compliant:
+            try:
+                from .quickfix import run_quickfix
+                deep_fix = run_quickfix(out_path)
+                if deep_fix.get("totalFixes"):
+                    log.info("REMEDIATE deep-fix applied %s fix(es)", deep_fix["totalFixes"])
+                    result = safe_validate_pdf(out_path, flavour=flavour)
+            except Exception as _df_exc:
+                log.warning("deep-fix skipped: %s", _df_exc)
+
         # ── AI visual review + auto-fix ───────────────────────────────────────
         # Claude reviews the rendered result and fixes the confident visual
         # mismatches (mis-tagged headings, wrong alt, title) in place; items it
@@ -312,6 +330,20 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
                 except Exception: pass
         except Exception as _vf_exc:
             log.warning("visual fix skipped: %s", _vf_exc)
+        # ── Matterhorn human-verification checklist ──────────────────────────
+        # The judgment items no automation can certify, built per-document with
+        # evidence (figure alts, heading outline, title) and the AI review's
+        # unresolved flags attached to the checkpoints they belong to.
+        human_checklist: list = []
+        try:
+            from .human_checklist import build_checklist
+            human_checklist = build_checklist(out_path, {
+                "visualRemaining": (visual_review or {}).get("remaining", []),
+                "colorOnlyCount": len(color_only_warnings),
+                "sensoryIssueCount": len(sensory_issues),
+            })
+        except Exception as _hc_exc:
+            log.warning("human checklist skipped: %s", _hc_exc)
         ocg_issues: list = []
         try:
             from .ocg_check import check_optional_content; ocg_issues = check_optional_content(out_path)
@@ -422,6 +454,8 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "validationError": result.validation_error,
         "validationComplete": result.validation_error is None,
         "visualReview": visual_review,
+        "humanChecklist": human_checklist,
+        "deepFix": deep_fix,
     }
     headers = {
         "Content-Disposition": f'attachment; filename="{base}.remediated.pdf"',

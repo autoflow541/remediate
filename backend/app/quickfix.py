@@ -197,6 +197,35 @@ def run_quickfix(pdf_path: str) -> dict:
         summary["errors"].append(f"fonts: {exc}")
         _record("fontsEmbedded", 0)
 
+    # ── 7a2. Unmarked-content artifact wrapping (PDF/UA 7.1-3) ───────────────
+    # Repair-mode docs keep their original tree; stray unmarked operators are
+    # wrapped as /Artifact so every painted op is either tagged or artifact.
+    try:
+        from .artifact_wrap import wrap_unmarked_content
+        n, notes = wrap_unmarked_content(pdf_path)
+        _record("unmarkedContentWrapped", n, notes)
+    except Exception as exc:
+        summary["errors"].append(f"artifact_wrap: {exc}")
+        _record("unmarkedContentWrapped", 0)
+
+    # ── 7b. Annotation alternate descriptions (PDF/UA 7.18.1 / 7.18.5) ───────
+    try:
+        from .annot_alt_fix import fix_annotation_descriptions
+        n, notes = fix_annotation_descriptions(pdf_path)
+        _record("annotDescriptionsAdded", n, notes)
+    except Exception as exc:
+        summary["errors"].append(f"annot_descriptions: {exc}")
+        _record("annotDescriptionsAdded", 0)
+
+    # ── 7c. Incomplete /CIDSet removal (PDF/UA 7.21.4.2) ─────────────────────
+    try:
+        from .cidset_fix import remove_incomplete_cidsets
+        n, notes = remove_incomplete_cidsets(pdf_path)
+        _record("cidsetsRemoved", n, notes)
+    except Exception as exc:
+        summary["errors"].append(f"cidset: {exc}")
+        _record("cidsetsRemoved", 0)
+
     # ── 8. Language tag injection ─────────────────────────────────────────────
     try:
         from .language_fix import fix_language_tags
