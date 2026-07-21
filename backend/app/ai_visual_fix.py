@@ -31,8 +31,13 @@ import tempfile
 
 log = logging.getLogger(__name__)
 
-_MODEL = "claude-opus-4-8"
-_MAX_TOKENS = 16000
+# Sonnet-5 (no extended thinking) instead of Opus-4.8+adaptive: the visual
+# review was ~80s/document, the dominant cost of /remediate. Sonnet is strong
+# at this vision-grounded structural comparison, and every fix it proposes
+# still passes through the validate-guard below (reverted if veraPDF regresses),
+# so the speed/quality trade is safe. Override with AI_VISUAL_MODEL.
+_MODEL = os.environ.get("AI_VISUAL_MODEL", "claude-sonnet-5")
+_MAX_TOKENS = 8000
 _ALLOWED_RETAGS = {"H1", "H2", "H3", "H4", "H5", "H6", "P", "Caption"}
 
 _SCHEMA = {
@@ -409,7 +414,6 @@ def run_visual_fix(pdf_path: str, max_pages: int = 6) -> dict:
         response = client.messages.create(
             model=_MODEL,
             max_tokens=_MAX_TOKENS,
-            thinking={"type": "adaptive"},
             system=_INSTRUCTIONS,
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
             messages=[{"role": "user", "content": content}],
