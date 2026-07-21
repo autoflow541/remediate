@@ -70,6 +70,7 @@ def run_deep_fix(pdf_path: str) -> dict:
     from .annot_alt_fix import fix_annotation_descriptions
     from .cidset_fix import remove_incomplete_cidsets
     from .language_fix import fix_language_tags
+    from .table_normalize import normalize_tables
     from .patch_pdf import patch_heading_levels, patch_table_headers
 
     rec("interleavingsFixed", fix_interleaved_marked_content, pdf_path)
@@ -80,6 +81,7 @@ def run_deep_fix(pdf_path: str) -> dict:
     rec("langTagsAdded", fix_language_tags, pdf_path)
     rec("headingsRepaired", lambda p: patch_heading_levels(p).get("repairs_made", 0), pdf_path)
     rec("tableHeadersScoped", lambda p: patch_table_headers(p).get("cells_tagged", 0), pdf_path)
+    rec("tablesNormalized", normalize_tables, pdf_path)
 
     # Fill empty Figure /Alt via vision (cheap for text docs, needed for 7.3-1).
     # Kept from the full quickfix; the multi-iteration AI compliance loop is not.
