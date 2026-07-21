@@ -352,25 +352,10 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         try:
             from .security_check import check_security; security = check_security(out_path)
         except Exception: pass
-        # ── Sprint 11: AI composite score ────────────────────────────────────
-        _score_manifest = dict(manifest_obj)
-        _score_manifest.update({
-            "altIssueCount": len(alt_issues),
-            "headingIssueCount": len(heading_issues),
-            "colorOnlyCount": len(color_only_warnings),
-            "sensoryIssueCount": len(sensory_issues),
-            "fontIssueCount": len(font_issues),
-            "contrastIssueCount": len(contrast_failures),
-            "linkTextIssueCount": len(link_text_issues),
-            "tableStructureIssueCount": len(table_structure_issues),
-            "languageIssueCount": len(language_issues),
-            "metadataIssueCount": len(metadata_issues),
-        })
+        # (The former AI composite-score call was removed — it added ~9s and the
+        #  studio never consumed aiAccessibilityScore; the score is computed
+        #  client-side from the conformance object.)
         ai_accessibility_score: dict | None = None
-        try:
-            from .ai_score import score_accessibility
-            ai_accessibility_score = score_accessibility(_score_manifest)
-        except Exception: pass
         # ── Regression guard: never hand back a file worse than the input ─────
         if baseline_result is not None and result.failed_checks > baseline_result.failed_checks:
             log.warning(

@@ -355,7 +355,7 @@ def _apply_fixes(pdf_path: str, fixes: list[dict]) -> tuple[list[dict], list[dic
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def run_visual_fix(pdf_path: str, max_pages: int = 6) -> dict:
+def run_visual_fix(pdf_path: str, max_pages: int = 4) -> dict:
     """Review the remediated PDF visually and auto-apply the safe fixes.
 
     Modifies pdf_path in place (with a validate-guard). Returns a report:

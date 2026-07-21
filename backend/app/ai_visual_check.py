@@ -27,8 +27,8 @@ log = logging.getLogger(__name__)
 
 _MODEL = "claude-opus-4-8"
 _MAX_TOKENS = 16000
-_MAX_PAGES = 6           # pages rendered into the review (cost/latency cap)
-_TARGET_WIDTH = 1100     # rendered page width in px — plenty for layout judgment
+_MAX_PAGES = 4           # pages rendered into the review (cost/latency cap)
+_TARGET_WIDTH = 880      # rendered page width in px — enough for layout judgment
 
 # The judgment areas the reviewer covers, in Matterhorn/WCAG terms.
 _CHECKS = ["alt_text", "reading_order", "headings", "decorative", "tables", "title", "other"]
