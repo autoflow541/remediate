@@ -191,3 +191,65 @@ def fix_alt_text(pdf_path: str) -> tuple[int, list[str]]:
         log.warning("alt_fix: %s", exc)
 
     return fixes, notes
+
+
+# Placeholder used when no meaningful alt could be generated. Deliberately
+# obvious so alt_quality.py and the human checklist both flag it for review.
+_ALT_PLACEHOLDER = "Image — description pending human review"
+
+
+def ensure_alt_present(pdf_path: str) -> tuple[int, list[str]]:
+    """Guarantee every non-artifact Figure has a non-empty /Alt (PDF/UA 7.3-1).
+
+    Runs AFTER the AI pass. Figures the AI described are left alone; any that
+    still lack /Alt (AI unavailable, declined, or a region it couldn't caption)
+    get an obvious placeholder so the file is machine-conformant, while the
+    alt-quality checker and Matterhorn checklist surface them as needing a real
+    description. Never overwrites an existing alt.
+    """
+    try:
+        import pikepdf
+    except ImportError:
+        return 0, []
+
+    filled = 0
+    placeholders = {_ALT_PLACEHOLDER.lower(), "image", "figure", "photo", "graphic", ""}
+    try:
+        with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            root = pdf.Root.get("/StructTreeRoot")
+            if root is None:
+                return 0, []
+            seen: set = set()
+            stack = [root]
+            while stack:
+                o = stack.pop()
+                if not hasattr(o, "get"):
+                    continue
+                try:
+                    og = o.objgen
+                    if og != (0, 0):
+                        if og in seen:
+                            continue
+                        seen.add(og)
+                except Exception:
+                    pass
+                try:
+                    if str(o.get("/S", "")) == "/Figure":
+                        alt = str(o.get("/Alt", "")).strip()
+                        if alt.lower() in placeholders:
+                            o[pikepdf.Name("/Alt")] = pikepdf.String(_ALT_PLACEHOLDER)
+                            filled += 1
+                except Exception:
+                    pass
+                k = o.get("/K")
+                if k is not None:
+                    stack.extend(list(k) if isinstance(k, pikepdf.Array) else [k])
+            if filled:
+                pdf.save()
+    except Exception as exc:
+        log.warning("ensure_alt_present: %s", exc)
+        return 0, []
+
+    notes = ([f"{filled} figure(s) given a placeholder alt text pending human "
+              "review (PDF/UA 7.3-1)"] if filled else [])
+    return filled, notes

@@ -68,6 +68,44 @@ def _span(cell, key: str, pikepdf) -> int:
     return 1
 
 
+def _has_scope(cell, pikepdf) -> bool:
+    try:
+        a = cell.get("/A")
+    except Exception:
+        return False
+    if a is None:
+        return False
+    for o in (list(a) if isinstance(a, pikepdf.Array) else [a]):
+        if hasattr(o, "get"):
+            try:
+                if o.get("/Scope") is not None:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _add_scope(pdf, cell, scope: str, pikepdf) -> None:
+    """Add /Scope to a TH's Table attribute object, preserving spans."""
+    from pikepdf import Array, Dictionary, Name
+    sc = Name("/" + scope)
+    try:
+        a = cell.get("/A")
+    except Exception:
+        a = None
+    if a is not None:
+        objs = list(a) if isinstance(a, pikepdf.Array) else [a]
+        for o in objs:
+            if hasattr(o, "get"):
+                try:
+                    if str(o.get("/O", "")) == "/Table":
+                        o[Name("/Scope")] = sc
+                        return
+                except Exception:
+                    continue
+    cell[Name("/A")] = Dictionary(O=Name.Table, Scope=sc)
+
+
 def _rows_of(table, pikepdf) -> list:
     """Ordered TR elements of a table, descending through THead/TBody/TFoot."""
     rows = []
@@ -94,6 +132,7 @@ def normalize_tables(pdf_path: str) -> tuple[int, list[str]]:
 
     padded_cells = 0
     wrapped = 0
+    scoped_ths = 0
     tables_fixed = 0
 
     try:
@@ -157,7 +196,7 @@ def normalize_tables(pdf_path: str) -> tuple[int, list[str]]:
                 row_cells: list[list] = []
                 row_covered: list[int] = []
                 width = 0
-                for tr in rows:
+                for row_idx, tr in enumerate(rows):
                     cells = [c for c in _kids(tr, pikepdf)
                              if hasattr(c, "get") and _s(c) in ("TD", "TH")]
                     covered: set[int] = {c for c, v in carry.items() if v > 0}
@@ -167,6 +206,13 @@ def normalize_tables(pdf_path: str) -> tuple[int, list[str]]:
                             col += 1
                         cs = _span(cell, "/ColSpan", pikepdf)
                         rs = _span(cell, "/RowSpan", pikepdf)
+                        # Every TH needs a /Scope (PDF/UA 7.5-1). Header row -> a
+                        # column header; leading cell of a body row -> a row
+                        # header; otherwise default to column.
+                        if _s(cell) == "TH" and not _has_scope(cell, pikepdf):
+                            scope = "Column" if row_idx == 0 else ("Row" if col == 0 else "Column")
+                            _add_scope(pdf, cell, scope, pikepdf)
+                            scoped_ths += 1
                         for cc in range(col, col + cs):
                             covered.add(cc)
                             if rs > 1:
@@ -180,15 +226,16 @@ def normalize_tables(pdf_path: str) -> tuple[int, list[str]]:
                     carry = {k: v - 1 for k, v in carry.items() if v - 1 > 0}
 
                 # ── pad short rows to `width` with empty cells ────────────────
+                # Always pad with blank TD spacers — never TH: a padded TH would
+                # need a /Scope it can't meaningfully have (PDF/UA 7.5-1), and an
+                # empty data cell in a header row is valid.
                 for tr, cells, covered_n in zip(rows, row_cells, row_covered):
                     if covered_n >= width:
                         continue
-                    all_header = bool(cells) and all(_s(c) == "TH" for c in cells)
-                    tag = Name.TH if all_header else Name.TD
                     additions = []
                     for _ in range(width - covered_n):
                         cell = pdf.make_indirect(Dictionary(
-                            Type=Name.StructElem, S=tag, P=tr))
+                            Type=Name.StructElem, S=Name.TD, P=tr))
                         additions.append(cell)
                         padded_cells += 1
                     k = tr.get("/K")
@@ -201,22 +248,24 @@ def normalize_tables(pdf_path: str) -> tuple[int, list[str]]:
                         tr[Name("/K")] = Array(additions)
                     changed = True
 
-                if changed:
+                if changed or scoped_ths:
                     tables_fixed += 1
 
-            if padded_cells or wrapped:
+            if padded_cells or wrapped or scoped_ths:
                 pdf.save()
     except Exception as exc:
         log.warning("table_normalize: %s", exc)
         return 0, []
 
     notes = []
-    if padded_cells or wrapped:
+    if padded_cells or wrapped or scoped_ths:
         parts = []
         if padded_cells:
             parts.append(f"padded {padded_cells} cell(s) to square the grid")
         if wrapped:
             parts.append(f"wrapped {wrapped} stray row element(s) in cells")
+        if scoped_ths:
+            parts.append(f"added /Scope to {scoped_ths} header cell(s)")
         notes.append(f"Normalized {tables_fixed} table(s): " + ", ".join(parts)
-                     + " (PDF/UA 7.2-10/42/43)")
-    return padded_cells + wrapped, notes
+                     + " (PDF/UA 7.2-10/42/43, 7.5-1)")
+    return padded_cells + wrapped + scoped_ths, notes

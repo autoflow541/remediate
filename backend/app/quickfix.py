@@ -86,8 +86,11 @@ def run_deep_fix(pdf_path: str) -> dict:
     # Fill empty Figure /Alt via vision (cheap for text docs, needed for 7.3-1).
     # Kept from the full quickfix; the multi-iteration AI compliance loop is not.
     try:
-        from .alt_fix import fix_alt_text
+        from .alt_fix import fix_alt_text, ensure_alt_present
         rec("altTextGenerated", fix_alt_text, pdf_path)
+        # Any figure the AI couldn't caption still needs a non-empty /Alt to be
+        # machine-conformant; the placeholder is flagged for human review.
+        rec("altPlaceholdersAdded", ensure_alt_present, pdf_path)
     except Exception as exc:
         summary["errors"].append(f"alt_text: {exc}")
 
