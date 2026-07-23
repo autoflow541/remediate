@@ -31,6 +31,12 @@ def _stream_mcids(pdf, page) -> set[int]:
         for instr in pikepdf.parse_content_stream(page):
             if str(instr.operator) == "BDC" and len(instr.operands) == 2:
                 try:
+                    # Skip /Artifact sequences: an artifact that carries an MCID
+                    # is intentionally NOT tagged content. Adopting it as a
+                    # structure element makes it both artifact and tagged, which
+                    # fails veraPDF 7.1-1 AND 7.1-2 on the same content.
+                    if str(instr.operands[0]) == "/Artifact":
+                        continue
                     props = instr.operands[1]
                     mcid = props.get("/MCID") if hasattr(props, "get") else None
                     if mcid is not None:
