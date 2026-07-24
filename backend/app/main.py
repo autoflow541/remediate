@@ -397,8 +397,22 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
             result = baseline_result
         with open(out_path, "rb") as fh: pdf_bytes = fh.read()
         elapsed = time.monotonic() - t0
-        log.info("REMEDIATE done  file=%r  elapsed=%.1fs  compliant=%s  regression_guard=%s",
-                 file.filename, elapsed, result.compliant, regression_guard["triggered"])
+        # Consolidated per-request summary: the one line that explains what the
+        # whole pipeline did to this document (mode taken, conformance reached,
+        # which safety nets fired, and the headline fix counts).
+        log.info(
+            "REMEDIATE done  file=%r  elapsed=%.1fs  mode=%s  compliant=%s  "
+            "failed_rules=%s  validated=%s  guard=%s  rebuild_fallback=%s  "
+            "deep_fixes=%s  visual_fixes=%d  fonts_embedded=%s  contrast_fixed=%s  "
+            "checklist_items=%d",
+            file.filename, elapsed, report.get("mode", "rebuild"),
+            result.compliant, result.failed_rules,
+            result.validation_error is None,
+            regression_guard["triggered"], rebuild_used,
+            deep_fix.get("totalFixes", 0),
+            len((visual_review or {}).get("applied", [])),
+            fonts_embedded, contrast_fixes, len(human_checklist),
+        )
     except WritebackError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except VeraPDFError as exc:

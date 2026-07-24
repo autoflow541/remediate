@@ -109,7 +109,15 @@ def run_deep_fix(pdf_path: str) -> dict:
         summary["errors"].append(f"verapdf_repair: {exc}")
 
     summary["totalFixes"] = sum(v for v in summary["fixes"].values() if isinstance(v, int))
-    log.info("deep_fix: %d structure fixes, errors=%d", summary["totalFixes"], len(summary["errors"]))
+    # Per-fixer breakdown so production logs show exactly what closed which
+    # clause on a given document (invaluable when a repair-mode doc misbehaves).
+    applied = {k: v for k, v in summary["fixes"].items() if isinstance(v, int) and v}
+    log.info("deep_fix: %d structure fixes %s  errors=%d",
+             summary["totalFixes"], applied or "{}", len(summary["errors"]))
+    for note in summary["notes"]:
+        log.info("deep_fix: %s", note)
+    if summary["errors"]:
+        log.warning("deep_fix errors: %s", summary["errors"])
     return summary
 
 

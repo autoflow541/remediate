@@ -56,6 +56,46 @@ def tmp_pdf(tmp_path):
 
 
 @pytest.fixture()
+def make_table_pdf(tmp_path):
+    """Factory building a PDF whose structure tree holds one table.
+
+    rows = list of lists of cell tags, e.g. [["TH","TH"], ["TH","TD"]].
+    Cells may also be (tag, colspan, rowspan) tuples. Returns the saved path.
+    """
+    def _make(rows):
+        import pikepdf
+        from pikepdf import Array, Dictionary, Name
+
+        pdf = pikepdf.new()
+        pdf.add_blank_page(page_size=(612, 792))
+        root = pdf.make_indirect(Dictionary(Type=Name.StructTreeRoot))
+        doc = pdf.make_indirect(Dictionary(Type=Name.StructElem, S=Name.Document, P=root))
+        table = pdf.make_indirect(Dictionary(Type=Name.StructElem, S=Name.Table, P=doc))
+        trs = []
+        for r in rows:
+            tr = pdf.make_indirect(Dictionary(Type=Name.StructElem, S=Name.TR, P=table))
+            cells = []
+            for spec in r:
+                tag, cs, rs = (spec if isinstance(spec, tuple) else (spec, 1, 1))
+                d = Dictionary(Type=Name.StructElem, S=Name("/" + tag), P=tr)
+                if cs > 1 or rs > 1:
+                    d.A = Dictionary(O=Name.Table, ColSpan=cs, RowSpan=rs)
+                cells.append(pdf.make_indirect(d))
+            tr.K = Array(cells)
+            trs.append(tr)
+        table.K = Array(trs)
+        doc.K = Array([table])
+        root.K = Array([doc])
+        pdf.Root.StructTreeRoot = root
+        pdf.Root.MarkInfo = Dictionary(Marked=True)
+        path = str(tmp_path / "table.pdf")
+        pdf.save(path)
+        pdf.close()
+        return path
+    return _make
+
+
+@pytest.fixture()
 def simple_manifest():
     """Return a minimal manifest with a few nodes."""
     return {
