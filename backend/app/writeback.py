@@ -326,20 +326,73 @@ class StructTreeBuilder:
                 self.pdf.make_indirect(ocr_stream),
             ])
 
+    def _inject_manifest_text_layer(self, page: pikepdf.Page, page_index: int) -> None:
+        """Inject an invisible text layer from the manifest's text nodes.
+
+        Used for image-only pages whose text was recovered by OpenDataLoader's
+        OCR (landing in the manifest) rather than our own OCR path. Without this
+        the recovered words never reach the PDF and the page is unreadable to
+        assistive tech despite passing veraPDF.
+        """
+        try:
+            from .ocr_vision import build_ocr_text_stream
+        except Exception:
+            return
+        # Manifest leaves on this page with text + a 4-tuple bbox.
+        elements = []
+        for lf in self.state.leaves:
+            if lf.page != (page_index + 1):
+                continue
+            text = (lf.node.get("text") or "").strip()
+            if text and lf.bbox and len(lf.bbox) == 4:
+                elements.append({"text": text, "bbox_pdf": lf.bbox})
+        if not elements:
+            return
+        try:
+            self._ensure_ocr_font(page)
+            stream_bytes = build_ocr_text_stream(elements)
+            if not stream_bytes.strip():
+                return
+            ocr_stream = pikepdf.Stream(self.pdf, stream_bytes)
+            existing = page.obj.get("/Contents")
+            if existing is None:
+                page.obj["/Contents"] = ocr_stream
+            elif isinstance(existing, pikepdf.Array):
+                arr = list(existing)
+                arr.append(self.pdf.make_indirect(ocr_stream))
+                page.obj["/Contents"] = Array(arr)
+            else:
+                page.obj["/Contents"] = Array([
+                    self.pdf.make_indirect(existing),
+                    self.pdf.make_indirect(ocr_stream),
+                ])
+        except Exception as exc:
+            log.debug("_inject_manifest_text_layer: %s", exc)
+
     def remark_page(self, page_index: int, page: pikepdf.Page) -> None:
-        # --- Scanned page: inject invisible OCR text layer first ---
-        _ocr_pages = self.manifest.get("_ocr_pages", {})
-        _page_ocr = _ocr_pages.get(str(page_index))
-        if _page_ocr and _page_ocr.get("elements"):
-            try:
-                _has_text = any(
-                    str(ins.operator) in {"Tj", "TJ", "'", '"'}
-                    for ins in pikepdf.parse_content_stream(page)
-                )
-            except Exception:
-                _has_text = False
-            if not _has_text:
+        # --- Scanned / image-only page: inject an invisible text layer first ---
+        # The page must have REAL text operators for the structure elements to
+        # bind to. When the page has none (a scan), we synthesize an invisible
+        # (Tr 3) text layer at the manifest's bounding boxes so remark_page can
+        # bind MCIDs to it. Source order: explicit OCR data (_ocr_pages) if the
+        # OCR path produced it, otherwise the manifest's own text nodes — which
+        # is where OpenDataLoader's built-in OCR lands, and which was previously
+        # left trapped (structure referenced text that wasn't in the stream, a
+        # veraPDF-passing but screen-reader-empty "hollow" result).
+        try:
+            _has_text = any(
+                str(ins.operator) in {"Tj", "TJ", "'", '"'}
+                for ins in pikepdf.parse_content_stream(page)
+            )
+        except Exception:
+            _has_text = True  # assume text present; don't inject over real content
+        if not _has_text:
+            _ocr_pages = self.manifest.get("_ocr_pages", {})
+            _page_ocr = _ocr_pages.get(str(page_index))
+            if _page_ocr and _page_ocr.get("elements"):
                 self._inject_ocr_text_layer(page, _page_ocr)
+            else:
+                self._inject_manifest_text_layer(page, page_index)
 
         leaves = self._leaves_for_page(page_index)
         if not leaves:
