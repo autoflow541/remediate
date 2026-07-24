@@ -315,6 +315,30 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
             except Exception as _df_exc:
                 log.warning("deep-fix skipped: %s", _df_exc)
 
+        # ── Rebuild fallback ─────────────────────────────────────────────────
+        # A repaired-but-still-failing tagged PDF usually has structure too
+        # broken to mechanically fix. Rebuild it from layout analysis instead
+        # (the untagged path already reaches conformance) and keep whichever of
+        # {repair, rebuild} validates better. Only runs when repair fell short.
+        rebuild_used = False
+        if (not result.compliant and report.get("mode") == "repair"
+                and result.validation_error is None):
+            try:
+                from .rebuild_fallback import rebuild_from_scratch
+                rb_path, rb_result, rb_report = rebuild_from_scratch(in_path, flavour)
+                if rb_path and rb_result is not None and rb_result.validation_error is None \
+                        and rb_result.failed_checks < result.failed_checks:
+                    log.info("REMEDIATE rebuild-fallback wins: repair=%d -> rebuild=%d failed_checks",
+                             result.failed_checks, rb_result.failed_checks)
+                    os.replace(rb_path, out_path)
+                    result = rb_result
+                    report = rb_report
+                    rebuild_used = True
+                elif rb_path and os.path.exists(rb_path):
+                    os.unlink(rb_path)
+            except Exception as _rb_exc:
+                log.warning("rebuild-fallback skipped: %s", _rb_exc)
+
         # ── AI visual review + auto-fix ───────────────────────────────────────
         # Claude reviews the rendered result and fixes the confident visual
         # mismatches (mis-tagged headings, wrong alt, title) in place; items it
@@ -440,6 +464,7 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "validationComplete": result.validation_error is None,
         "visualReview": visual_review,
         "humanChecklist": human_checklist,
+        "rebuildFallbackUsed": rebuild_used,
         "deepFix": deep_fix,
     }
     headers = {
