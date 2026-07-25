@@ -727,6 +727,37 @@ function buildAuditReport({ conformance, score, filename, manifest }) {
   const aiStatsR = manifest?.source?.aiAnalysis || {};
 
   const validationCompleteR = conformance?.validationComplete !== false;
+
+  // ── Human verification checklist (Matterhorn Protocol) ────────────────────
+  // The judgment checkpoints automation cannot certify, rendered as a
+  // sign-off record: checkboxes + reviewer name/date. Print-friendly, no JS.
+  const humanChecklist = conformance?.humanChecklist || [];
+  const humanChecklistSection = humanChecklist.length === 0 ? "" : `
+<h2>Human verification checklist (Matterhorn Protocol)</h2>
+<p style="font-size:.875rem;color:#374151">Automated checks cover the machine-verifiable
+requirements. The ${humanChecklist.length} checkpoint${humanChecklist.length !== 1 ? "s" : ""} below
+require human judgment — reviewing and signing this section completes the document's
+conformance verification record. Evidence extracted from the remediated file is shown
+under each item; ⚑ marks passages the AI visual review could not resolve on its own.</p>
+${humanChecklist.map((it, i) => `
+<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:10px 0;page-break-inside:avoid">
+  <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer">
+    <input type="checkbox" style="width:16px;height:16px;margin-top:3px">
+    <span>
+      <strong>${i + 1}. ${escHtml(it.question)}</strong>
+      <span style="color:#6b7280;font-size:.78rem"> &nbsp;Matterhorn ${escHtml(it.matterhorn)} · ${escHtml(it.wcag)}</span>
+      <br><span style="font-size:.84rem;color:#374151">${escHtml(it.why)}</span>
+      ${(it.evidence || []).length ? `<ul style="margin:6px 0 0 16px;font-size:.8rem;color:#4b5563">${it.evidence.slice(0, 20).map(e => `<li>${escHtml(e)}</li>`).join("")}</ul>` : ""}
+      ${(it.aiFlags || []).length ? `<ul style="margin:6px 0 0 16px;font-size:.8rem;color:#92400e">${it.aiFlags.map(f => `<li>⚑ ${escHtml(f)}</li>`).join("")}</ul>` : ""}
+    </span>
+  </label>
+</div>`).join("")}
+<div style="border:2px solid #e5e7eb;border-radius:8px;padding:16px;margin:16px 0 24px;display:flex;gap:32px;flex-wrap:wrap;font-size:.875rem">
+  <span>Reviewed by: <input type="text" style="border:none;border-bottom:1px solid #9ca3af;min-width:220px;font-size:.875rem" aria-label="Reviewer name"></span>
+  <span>Date: <input type="text" style="border:none;border-bottom:1px solid #9ca3af;min-width:120px;font-size:.875rem" aria-label="Review date"></span>
+  <span style="flex-basis:100%;color:#6b7280;font-size:.8rem">Tip: complete this checklist, then print or save this page as PDF to keep with your accessibility records.</span>
+</div>`;
+
   const rows = [
     ["Document title",       docTitle,                              true],
     ["Document language",    lang,                                  !!lang && lang !== "Not set"],
@@ -915,6 +946,7 @@ conformant.
   <thead><tr><th>Check</th><th>Result</th><th>Status</th></tr></thead>
   <tbody>${tableRows}</tbody>
 </table>
+${humanChecklistSection}
 ${contrastSection}
 ${linkFixedSection}
 ${linkSection}
@@ -1722,6 +1754,34 @@ function DoneScreen({ result, onReset }) {
               </ul>
             )}
             <p className="vc-disclaimer">{visualReview.disclaimer}</p>
+          </div>
+        )}
+
+        {(conformance?.humanChecklist || []).length > 0 && (
+          <div className="hc-panel">
+            <div className="vc-head">
+              <strong>Human verification — {conformance.humanChecklist.length} checkpoint{conformance.humanChecklist.length !== 1 ? "s" : ""}</strong>
+              <span className="vc-sub">
+                These are the judgment calls no automated tool can certify (Matterhorn
+                Protocol). The audit report contains this list as a sign-off checklist
+                with evidence from your document — complete it to finish the
+                conformance record.
+              </span>
+            </div>
+            <ul className="hc-list">
+              {conformance.humanChecklist.map((it) => (
+                <li key={it.id}>
+                  <span className="hc-q">{it.question}</span>
+                  <span className="hc-ref"> {it.matterhorn !== "—" ? `Matterhorn ${it.matterhorn} · ` : ""}{it.wcag}</span>
+                  {(it.aiFlags || []).length > 0 && (
+                    <span className="hc-flag"> ⚑ {it.aiFlags.length} passage{it.aiFlags.length !== 1 ? "s" : ""} flagged by AI review</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <button className="ghost" onClick={handleAuditDownload}>
+              Download audit report with sign-off checklist
+            </button>
           </div>
         )}
 

@@ -169,6 +169,13 @@ textarea { resize: vertical; min-height: 80px; }
 
 /* ── AI visual review panel ─────────────────────────────────────────────── */
 .vc-panel { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin: 16px 0; text-align: left; }
+.hc-panel { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin: 16px 0; text-align: left; }
+.hc-list { list-style: none; margin: 0 0 12px; display: flex; flex-direction: column; gap: 8px; }
+.hc-list li { font-size: 13px; line-height: 1.5; padding-left: 22px; position: relative; }
+.hc-list li::before { content: "☐"; position: absolute; left: 0; color: var(--muted); }
+.hc-q { color: var(--text); }
+.hc-ref { color: var(--muted); font-size: 11px; }
+.hc-flag { color: var(--warn); font-size: 11.5px; }
 .vc-head { margin-bottom: 12px; }
 .vc-head strong { display: block; font-size: 14px; margin-bottom: 4px; }
 .vc-sub { font-size: 12px; color: var(--muted); line-height: 1.5; }
