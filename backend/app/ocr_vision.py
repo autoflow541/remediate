@@ -179,22 +179,49 @@ def _frac_to_pdf(
     return [round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)]
 
 
+# WinAnsiEncoding Unicode → byte for the 0x80-0x9F band (smart quotes, dashes,
+# bullet, ellipsis, euro, trademark, …). ASCII (0x20-0x7E) and Latin-1
+# (0xA0-0xFF) are identity, so only this band needs an explicit table.
+_WINANSI_HIGH: dict[int, int] = {
+    0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+    0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+    0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+    0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+    0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+    0x017E: 0x9E, 0x0178: 0x9F,
+}
+
+
+def _to_winansi_byte(cp: int) -> int:
+    """Map a Unicode code point to its WinAnsiEncoding byte, or 0x3F ('?')."""
+    if 0x20 <= cp <= 0x7E or 0xA0 <= cp <= 0xFF:
+        return cp
+    return _WINANSI_HIGH.get(cp, 0x3F)
+
+
 def _encode_pdf_string(text: str) -> bytes:
-    """Encode text as a PDF string literal (Latin-1 or UTF-16BE hex)."""
-    try:
-        encoded = text.encode("latin-1")
-        escaped = (
-            encoded
-            .replace(b"\\", b"\\\\")
-            .replace(b"(", b"\\(")
-            .replace(b")", b"\\)")
-            .replace(b"\r", b"\\r")
-            .replace(b"\n", b"\\n")
-        )
-        return b"(" + escaped + b")"
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        hex_str = text.encode("utf-16-be").hex().upper()
-        return b"<FEFF" + hex_str.encode() + b">"
+    """Encode text as a single-byte WinAnsiEncoding PDF string literal.
+
+    The invisible text layer is drawn with the simple WinAnsi /F_OCR font, so
+    every byte must be a valid WinAnsi code with a real glyph. A previous
+    version fell back to UTF-16BE for any non-Latin-1 character (e.g. a curly
+    quote), but those 2-byte sequences were then read by the WinAnsi font as
+    single bytes — the 0x00 high bytes resolved to the .notdef glyph, failing
+    veraPDF 7.21.8-1 (.notdef reference) and 7.21.7-2 (.notdef → Unicode 0) on
+    every such run. WinAnsi covers the common typographic characters (smart
+    quotes, en/em dashes, bullet, ellipsis, euro); anything it cannot represent
+    degrades to '?' rather than corrupting the whole run.
+    """
+    encoded = bytes(_to_winansi_byte(ord(ch)) for ch in text)
+    escaped = (
+        encoded
+        .replace(b"\\", b"\\\\")
+        .replace(b"(", b"\\(")
+        .replace(b")", b"\\)")
+        .replace(b"\r", b"\\r")
+        .replace(b"\n", b"\\n")
+    )
+    return b"(" + escaped + b")"
 
 
 # ---------------------------------------------------------------------------

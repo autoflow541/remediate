@@ -187,6 +187,14 @@ _WIN_ANSI: dict[int, int] = {
     **{i: i for i in range(0xA0, 0x100)},   # 0xA0-0xFF: Latin-1 Supplement
 }
 
+# Extend the subset to every Unicode code point WinAnsiEncoding can address.
+# The 0x80-0x9F band (smart quotes, en/em dashes, bullet, ellipsis, euro, …)
+# maps to Unicode U+2013..U+20AC — outside the Basic-Latin/Latin-1 range above.
+# Without these glyphs in the subset, an OCR text-layer byte like 0x92 (’) or
+# 0x96 (–) resolves to .notdef, which veraPDF flags on the *invisible* text
+# layer as both 7.21.8-1 (.notdef reference) and 7.21.7-2 (.notdef → Unicode 0).
+_SUBSET_UNICODES = sorted(set(_SUBSET_UNICODES) | set(_WIN_ANSI.values()))
+
 
 def _extract_widths_from_ttf(
     font_data: bytes,
@@ -322,7 +330,12 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
 
     embedded = 0
     notes: list[str] = []
-    seen: set[str] = set()  # avoid double-embedding same font
+    # Dedup by font OBJECT identity (objgen), not BaseFont name. Rebuild mode
+    # injects one /F_OCR font per page, all named "Helvetica" but each a
+    # distinct object — name-based dedup embedded only the first and left the
+    # rest unembedded (veraPDF 7.21.7/7.21.8). A shared object referenced from
+    # multiple pages still resolves to one objgen, so it is embedded once.
+    seen_objs: set = set()
 
     try:
         pdf = pikepdf.open(pdf_path, allow_overwriting_input=True)
@@ -341,8 +354,21 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                 try:
                     obj = font_ref.get_object() if hasattr(font_ref, "get_object") else font_ref
                     base_font = str(obj.get("/BaseFont", "")).lstrip("/")
-                    if not base_font or base_font in seen:
+                    if not base_font:
                         continue
+                    # Dedup only genuine indirect objects (a shared font referenced
+                    # from several pages). Inline/direct font objects report objgen
+                    # (0,0) and are never shared between pages — rebuild mode emits
+                    # one such /F_OCR Helvetica per page, each a distinct object that
+                    # must be embedded on its own, so they are never deduped.
+                    try:
+                        _og = obj.objgen
+                    except Exception:
+                        _og = (0, 0)
+                    if _og != (0, 0):
+                        if _og in seen_objs:
+                            continue
+                        seen_objs.add(_og)
                     # Composite (Type0/CID) and subset fonts ("ABCDEF+Name") are
                     # untouchable: their glyph IDs, CMaps and width tables are
                     # specific to the exact embedded program. Substituting a
@@ -389,7 +415,6 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                                 obj[pikepdf.Name("/Subtype")] = pikepdf.Name("/TrueType")
                                 _set_font_widths(pdf, obj, font_data)
                                 _set_winansi_encoding(obj)  # veraPDF 7.21.6
-                                seen.add(base_font)
                                 embedded += 1
                                 notes.append(
                                     f"Embedded {base_font} (created descriptor) "
@@ -404,8 +429,7 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                             cmap_bytes = _make_tounicode_cmap()
                             cmap_stream = pikepdf.Stream(pdf, cmap_bytes)
                             obj[pikepdf.Name("/ToUnicode")] = cmap_stream
-                            if base_font not in seen:
-                                notes.append(f"ToUnicode CMap added for {base_font} (no descriptor)")
+                            notes.append(f"ToUnicode CMap added for {base_font} (no descriptor)")
                         continue
                     desc = desc_ref.get_object() if hasattr(desc_ref, "get_object") else desc_ref
                     already_embedded = (
@@ -436,7 +460,6 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                                 _set_font_widths(pdf, obj, font_data)
                                 if str(obj.get("/Subtype", "")) == "/TrueType":
                                     _set_winansi_encoding(obj)  # veraPDF 7.21.6
-                                seen.add(base_font)
                                 embedded += 1
                                 sub_name = os.path.basename(sys_path)
                                 notes.append(f"Embedded {base_font} using {sub_name}")
@@ -469,8 +492,7 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                             cmap_bytes = _make_tounicode_cmap()
                         cmap_stream = pikepdf.Stream(pdf, cmap_bytes)
                         obj[pikepdf.Name("/ToUnicode")] = cmap_stream
-                        if base_font not in seen:
-                            notes.append(f"ToUnicode CMap added for {base_font}")
+                        notes.append(f"ToUnicode CMap added for {base_font}")
 
                 except Exception as exc:
                     log.warning("font_embed per-font %r: %s", base_font if 'base_font' in dir() else '?', exc)
