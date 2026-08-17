@@ -42,6 +42,62 @@ HEADING_TAGS = {f"H{i}" for i in range(1, 7)}
 
 
 # --------------------------------------------------------------------------
+# Widget / form-field flag constants and grouping (PDF/UA §7.18.4).
+# --------------------------------------------------------------------------
+_ANNOT_F_HIDDEN = 1 << 1   # /F bit 2  — annotation is Hidden (never displayed)
+_FF_RADIO       = 1 << 15  # /Ff bit 16 — button field is a Radio group
+_FF_PUSHBUTTON  = 1 << 16  # /Ff bit 17 — button field is a Push button
+
+
+def _humanise_field_name(raw: str) -> str:
+    """Turn a raw /T field name into a readable label ("fullName" -> "Full
+    Name"). Reuses form_fields._slug_to_label; falls back to the raw name."""
+    try:
+        from .form_fields import _slug_to_label
+        return _slug_to_label(raw)
+    except Exception:
+        return raw
+
+
+def _group_widgets(widgets: list[dict]) -> list[dict]:
+    """Group widget annotations into logical form-field structure elements.
+
+    Radio-button widgets that share one parent field collapse into a single
+    /Form element, so a screen reader announces one grouped control with N
+    options instead of N unrelated fields (PDF/UA §7.18.4 intent). Every other
+    widget — text field, checkbox, push button, choice list, signature — is its
+    own group. Hidden widgets are dropped entirely: an invisible, non-
+    interactive control does not belong in the structure tree.
+
+    Each input dict describes one widget: ``{wid, hidden, field_id, ft, ff,
+    label}``. Returns groups in first-appearance order, each
+    ``{label, members: [wid, ...], is_radio}``.
+    """
+    groups: list[dict] = []
+    radio_index: dict[Any, int] = {}   # field_id -> index into `groups`
+
+    for w in widgets:
+        if w.get("hidden"):
+            continue
+        ff = int(w.get("ff") or 0)
+        ft = w.get("ft") or ""
+        is_radio = (
+            ft == "/Btn"
+            and bool(ff & _FF_RADIO)
+            and not bool(ff & _FF_PUSHBUTTON)
+        )
+        fid = w.get("field_id")
+        label = w.get("label") or "Form field"
+        if is_radio and fid is not None and fid in radio_index:
+            groups[radio_index[fid]]["members"].append(w["wid"])
+            continue
+        if is_radio and fid is not None:
+            radio_index[fid] = len(groups)
+        groups.append({"label": label, "members": [w["wid"]], "is_radio": is_radio})
+    return groups
+
+
+# --------------------------------------------------------------------------
 # 2x3 affine matrix helpers ([a, b, c, d, e, f]) for tracking text position.
 # --------------------------------------------------------------------------
 IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
@@ -627,14 +683,30 @@ class StructTreeBuilder:
         self.report["bookmarks"] = count
 
     # -- widget tagging (WCAG 4.1.2 / veraPDF 7.18.4) ----------------------
-    def _tag_widgets(self) -> None:
-        """Wrap each /Widget annotation in a /Form structure element.
+    @staticmethod
+    def _obj_key(obj) -> Any:
+        """Stable identity for an (indirect) PDF object, for grouping."""
+        try:
+            og = obj.objgen
+            if og and og != (0, 0):
+                return og
+        except Exception:
+            pass
+        return id(obj)
 
-        veraPDF clause 7.18.4 requires Widget annotations to be nested inside
-        a Form structure element.  We create one Form elem per Widget and
-        append it to the Document element, mirroring what _tag_links does for
-        hyperlinks.  Each annotation gets a /StructParent key that maps back to
-        its Form struct element via the ParentTree.
+    def _tag_widgets(self) -> None:
+        """Wrap /Widget annotations in /Form structure elements.
+
+        veraPDF clause 7.18.4 requires every Widget annotation to be nested
+        inside a Form structure element.  We create one Form elem per logical
+        field and append it to the Document element, mirroring what _tag_links
+        does for hyperlinks.  Each annotation gets a /StructParent key that maps
+        back to its Form struct element via the ParentTree.
+
+        Radio-button widgets that share a parent field are collapsed into a
+        single Form element (one grouped control announced with N options, not
+        N unrelated fields).  Hidden widgets are skipped — an invisible control
+        must not appear in the structure tree.
         """
         document_elem = self.struct_root.get("/K")
         if document_elem is None:
@@ -642,8 +714,11 @@ class StructTreeBuilder:
         if isinstance(document_elem, Array):
             document_elem = document_elem[0]
 
-        widgets_tagged = 0
-        for page_idx, page in enumerate(self.pdf.pages):
+        # Pass 1 — collect widget descriptors across all pages.
+        wid_refs: dict[int, tuple] = {}      # wid -> (annot_ref, page_obj)
+        descriptors: list[dict] = []
+        next_wid = 0
+        for page in self.pdf.pages:
             annots = page.obj.get("/Annots")
             if not annots:
                 continue
@@ -653,50 +728,89 @@ class StructTreeBuilder:
                     if annot.get("/Subtype") != Name.Widget:
                         continue
 
-                    # Derive an accessible label: /TU (tooltip) on field or parent.
+                    # The owning field is the annot itself when merged (has
+                    # /FT), else its /Parent.  /FT and /Ff may be inherited.
+                    parent = annot.get("/Parent")
+                    field = annot if annot.get("/FT") is not None else (parent or annot)
+
+                    ft = field.get("/FT") or annot.get("/FT")
+                    ft = str(ft) if ft is not None else ""
+                    ff = field.get("/Ff")
+                    if ff is None:
+                        ff = annot.get("/Ff")
+                    ff = int(ff) if ff is not None else 0
+
+                    f_flags = annot.get("/F")
+                    hidden = bool(int(f_flags) & _ANNOT_F_HIDDEN) if f_flags is not None else False
+
+                    # Accessible label: prefer a /TU tooltip (already human-
+                    # readable). Fall back to the raw /T field name, humanised
+                    # via _slug_to_label so the struct label reads "Full Name"
+                    # rather than "fullName" even when the /TU pass hasn't run.
                     label = ""
-                    for src in (annot, annot.get("/Parent")):
-                        if src is None:
-                            continue
-                        for key in ("/TU", "/T"):
-                            v = src.get(key)
-                            if v:
-                                label = str(v)
-                                break
-                        if label:
+                    for src in (field, annot, parent):
+                        if src is not None and src.get("/TU"):
+                            label = str(src.get("/TU"))
                             break
-                    label = label or "Form field"
+                    if not label:
+                        for src in (field, annot, parent):
+                            if src is not None and src.get("/T"):
+                                label = _humanise_field_name(str(src.get("/T")))
+                                break
 
-                    form_elem = self.pdf.make_indirect(
-                        Dictionary(
-                            Type=Name.StructElem,
-                            S=Name.Form,
-                            P=document_elem,
-                            T=String(label),
-                            Pg=page.obj,
-                        )
-                    )
-                    form_elem.K = self.pdf.make_indirect(
-                        Dictionary(Type=Name.OBJR, Obj=annot_ref, Pg=page.obj)
-                    )
+                    wid = next_wid
+                    next_wid += 1
+                    wid_refs[wid] = (annot_ref, page.obj)
+                    descriptors.append({
+                        "wid": wid,
+                        "hidden": hidden,
+                        "field_id": self._obj_key(field),
+                        "ft": ft,
+                        "ff": ff,
+                        "label": label,
+                    })
+                except Exception:
+                    continue
 
-                    # Allocate a ParentTree key for this annotation.
+        # Pass 2 — group (radio widgets share one Form) and materialize.
+        widgets_tagged = 0
+        for group in _group_widgets(descriptors):
+            try:
+                members = group["members"]
+                first_page = wid_refs[members[0]][1]
+                form_elem = self.pdf.make_indirect(
+                    Dictionary(
+                        Type=Name.StructElem,
+                        S=Name.Form,
+                        P=document_elem,
+                        T=String(group["label"]),
+                        Pg=first_page,
+                    )
+                )
+
+                objr_kids = []
+                for wid in members:
+                    annot_ref, page_obj = wid_refs[wid]
+                    objr = self.pdf.make_indirect(
+                        Dictionary(Type=Name.OBJR, Obj=annot_ref, Pg=page_obj)
+                    )
+                    objr_kids.append(objr)
                     key = self._annot_next_key
                     self._annot_next_key += 1
                     annot_ref.StructParent = key
                     self._parent_tree_nums.append(key)
                     self._parent_tree_nums.append(form_elem)
-
-                    # Append to Document's /K array.
-                    kids = document_elem.get("/K")
-                    if isinstance(kids, Array):
-                        kids.append(form_elem)
-                    else:
-                        document_elem.K = Array([kids, form_elem] if kids else [form_elem])
-
                     widgets_tagged += 1
-                except Exception:
-                    continue
+
+                form_elem.K = objr_kids[0] if len(objr_kids) == 1 else Array(objr_kids)
+
+                kids = document_elem.get("/K")
+                if isinstance(kids, Array):
+                    kids.append(form_elem)
+                else:
+                    document_elem.K = Array([kids, form_elem] if kids else [form_elem])
+            except Exception:
+                continue
 
         self.report["widgets_tagged"] = widgets_tagged
 

@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import re
 
-_ACRONYMS = frozenset(["id", "ssn", "dob", "ssid", "ein", "url", "email", "zip",
+_ACRONYMS = frozenset(["id", "ssn", "dob", "ssid", "ein", "url", "zip",
                        "po", "usa", "ada", "wcag", "pdf", "fax", "tel", "ok"])
+
+# Minor words kept lower-case in a title, unless they lead the label.
+_MINOR_WORDS = frozenset(["of", "the", "and", "a", "an", "in", "on", "for",
+                          "to", "or", "at", "by", "vs"])
 
 _FIELD_TYPE_LABELS = {
     "/Tx":  "text field",
@@ -64,11 +68,15 @@ def _slug_to_label(raw: str) -> str:
     if not s:
         return raw.title()
 
-    # Title-case each word, but upper-case known acronyms
+    # Title-case each word, upper-case known acronyms, and keep minor words
+    # (of, the, and, ...) lower-case unless they lead the label.
     words = []
-    for w in s.split():
-        if w.lower() in _ACRONYMS:
+    for i, w in enumerate(s.split()):
+        lw = w.lower()
+        if lw in _ACRONYMS:
             words.append(w.upper())
+        elif lw in _MINOR_WORDS and i > 0:
+            words.append(lw)
         else:
             words.append(w.capitalize())
 
