@@ -794,6 +794,12 @@ class StructTreeBuilder:
                         Pg=first_page,
                     )
                 )
+                # A Form element that references MORE THAN ONE widget (a radio
+                # group) is only valid if it carries a PrintField Role attribute
+                # (PDF/UA-1 7.18.4-2); without it, veraPDF requires exactly one
+                # OBJR child. Tag the group as a radio-button PrintField.
+                if group.get("is_radio") and len(group["members"]) > 1:
+                    form_elem.A = Dictionary(O=Name("/PrintField"), Role=Name("/rb"))
 
                 objr_kids = []
                 for wid in members:

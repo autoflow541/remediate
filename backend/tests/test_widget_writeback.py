@@ -83,10 +83,21 @@ def test_radio_group_and_hidden_widget_handling():
     assert str(text_k.get("/Type")) == "/OBJR"
 
     # Radio group -> an array of three OBJR kids.
-    radio_k = by_label["Gender"].get("/K")
+    radio_form = by_label["Gender"]
+    radio_k = radio_form.get("/K")
     assert isinstance(radio_k, Array)
     assert len(radio_k) == 3
     assert all(str(o.get("/Type")) == "/OBJR" for o in radio_k)
+
+    # A multi-widget Form MUST carry a PrintField Role attribute, else veraPDF
+    # 7.18.4-2 fails (a role-less Form may reference only one widget).
+    a = radio_form.get("/A")
+    assert a is not None
+    assert str(a.get("/O")) == "/PrintField"
+    assert str(a.get("/Role")) == "/rb"
+
+    # The single-widget text Form needs no such attribute (one OBJR is valid).
+    assert by_label["Full Name"].get("/A") is None
 
     # ParentTree got one (key, elem) pair per tagged widget = 4 entries * 2.
     assert len(wb._parent_tree_nums) == 8
