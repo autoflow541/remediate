@@ -24,11 +24,13 @@ its content-stream MCID as `/Artifact`. This is the highest-value judgment call
 a human normally makes. Must be verified against veraPDF (orphan-MCID / 7.1-3
 risk) before shipping — the apply path exists as a guarded skip until then.
 
-## 3. 🧪 AI-driven reading order
-Reading order is currently manual (top-level up/down only). Let the vision model
-emit the correct linear order from the render; the engine rewrites the structure
-tree to match. Reading order is the #1 real-world accessibility failure that
-machine layout analysis gets wrong on multi-column / sidebar pages.
+## 3. 🔨 AI-driven reading order — engine now ready
+Reading order is the #1 real-world accessibility failure on multi-column /
+sidebar pages. **Engine shipped:** `reading_order` now extracts the *whole*
+tree with stable path IDs and reorders siblings at **any** depth (not just the
+top level). What remains is the AI action: let the vision model emit the correct
+order from the render and call `apply_reading_order` — needs a veraPDF run on the
+VM to confirm the rewritten tree stays conformant.
 
 ## 4. 🧪 Close the base-14 font-embedding gap (veraPDF 7.21.4.1)
 The last remaining machine-conformance failure in the corpus (t02/t19:
