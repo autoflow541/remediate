@@ -49,7 +49,7 @@ _SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["retag", "set_alt", "set_title"]},
+                    "action": {"type": "string", "enum": ["retag", "set_alt", "set_title", "set_lang"]},
                     "target_text": {
                         "type": "string",
                         "description": "retag only: the block's visible text, verbatim, enough to uniquely identify it.",
@@ -65,9 +65,13 @@ _SCHEMA = {
                     },
                     "new_alt": {"type": "string", "description": "set_alt only: corrected alt text."},
                     "new_title": {"type": "string", "description": "set_title only: the visible document title."},
+                    "new_lang": {
+                        "type": "string",
+                        "description": "set_lang only: the BCP-47 language tag of the page's primary text (e.g. \"en-US\", \"es\", \"fr-CA\").",
+                    },
                     "reason": {"type": "string"},
                 },
-                "required": ["action", "target_text", "new_tag", "figure_number", "new_alt", "new_title", "reason"],
+                "required": ["action", "target_text", "new_tag", "figure_number", "new_alt", "new_title", "new_lang", "reason"],
                 "additionalProperties": False,
             },
         },
@@ -112,6 +116,9 @@ Choose heading levels so the visual hierarchy maps to H1 > H2 > H3 without skips
 the image visibly shows. Provide corrected alt (concise, describes content and purpose).
    - set_title: the document title in metadata doesn't match the visible title on page 1. \
 Provide the visible title.
+   - set_lang: the document's declared language (shown to you) does not match the language \
+the page text is visibly written in. Provide the correct BCP-47 tag in `new_lang` \
+(e.g. "en-US", "es", "fr-CA"). Only when you are certain of the language from the render.
    Only propose a fix when you are CONFIDENT from the render. When unsure, put it in \
 `remaining` instead.
 
@@ -131,6 +138,31 @@ def _norm(s: str) -> str:
     """Normalize text for matching: lowercase, alnum+spaces collapsed."""
     s = re.sub(r"[^a-z0-9]+", " ", s.lower())
     return re.sub(r"\s+", " ", s).strip()
+
+
+_BCP47_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+
+
+def _normalise_lang(code: str) -> str | None:
+    """Validate and canonicalise a BCP-47 language tag, or return None.
+
+    Lower-cases the primary language subtag, upper-cases a 2-letter region
+    subtag and title-cases a 4-letter script subtag ("EN-us" -> "en-US",
+    "zh-hant" -> "zh-Hant"). Rejects anything that is not a plausible tag.
+    """
+    code = (code or "").strip()
+    if not _BCP47_RE.match(code):
+        return None
+    parts = code.split("-")
+    out = [parts[0].lower()]
+    for sub in parts[1:]:
+        if len(sub) == 2 and sub.isalpha():
+            out.append(sub.upper())          # region: US, CA
+        elif len(sub) == 4 and sub.isalpha():
+            out.append(sub.capitalize())     # script: Hant, Latn
+        else:
+            out.append(sub.lower())
+    return "-".join(out)
 
 
 def _page_mcid_texts(pdf, page) -> dict[int, str]:
@@ -323,6 +355,24 @@ def _apply_fixes(pdf_path: str, fixes: list[dict]) -> tuple[list[dict], list[dic
                     except Exception:
                         pass
                     applied.append({"action": "set_title", "title": title[:120],
+                                    "reason": fix.get("reason", "")})
+
+                elif action == "set_lang":
+                    lang = _normalise_lang(str(fix.get("new_lang", "")))
+                    if not lang:
+                        skipped.append({**fix, "why": "invalid or empty language tag"})
+                        continue
+                    current = str(pdf.Root.get("/Lang", "")) or ""
+                    if current.lower() == lang.lower():
+                        skipped.append({**fix, "why": "language already " + lang})
+                        continue
+                    pdf.Root[Name("/Lang")] = String(lang)
+                    try:
+                        with pdf.open_metadata(set_pikepdf_as_editor=False) as meta:
+                            meta["dc:language"] = lang
+                    except Exception:
+                        pass
+                    applied.append({"action": "set_lang", "lang": lang,
                                     "reason": fix.get("reason", "")})
                 else:
                     skipped.append({**fix, "why": f"unknown action {action!r}"})
