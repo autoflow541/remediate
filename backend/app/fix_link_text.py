@@ -29,7 +29,8 @@ _ACRONYMS = frozenset(["wcag", "pdf", "ua", "aria", "html", "ada", "508", "atag"
 # Slug words that are generic and need more context (same list as link_quality._GENERIC)
 _GENERIC_SLUGS = frozenset([
     "index", "home", "page", "link", "here", "more", "info",
-    "download", "view", "open", "get", "go", "visit",
+    "download", "view", "open", "get", "go", "visit", "click",
+    "clickhere", "readmore", "learnmore", "default", "main",
 ])
 
 
@@ -51,11 +52,13 @@ def _slug_to_label(path: str) -> str | None:
         if not slug or slug.lower() in _GENERIC_SLUGS:
             return None
 
-    # Upper-case known acronyms
+    # Title-case first, THEN upper-case known acronyms — otherwise a trailing
+    # .title() would undo the acronym casing ("WCAG" -> "Wcag").
+    slug = slug.title()
     for acronym in _ACRONYMS:
         slug = re.sub(rf"(?i)\b{re.escape(acronym)}\b", acronym.upper(), slug)
 
-    return slug.title()
+    return slug
 
 
 def _ask_claude(url: str, context: str) -> str | None:
@@ -98,6 +101,18 @@ def generate_link_description(url: str, context: str = "") -> str:
         parsed = urlparse(url)
     except Exception:
         return "Link"
+
+    scheme = (parsed.scheme or "").lower()
+
+    # mailto: / tel: carry their own meaning — describe the action, don't run
+    # the address through the path-slug machinery (which strips ".com" as a
+    # file extension and title-cases the local part).
+    if scheme == "mailto":
+        addr = (parsed.path or "").strip()
+        return f"Email {addr}" if addr else "Email link"
+    if scheme == "tel":
+        num = (parsed.path or "").strip()
+        return f"Call {num}" if num else "Phone link"
 
     domain = parsed.netloc.replace("www.", "") or url[:40]
 
