@@ -18,6 +18,11 @@ from app.form_fields import _slug_to_label
     ("ssn", "SSN"),
     ("home-zip", "Home ZIP"),
     ("of_counsel", "Of Counsel"),          # minor word leads -> capitalised
+    ("tbTotal", "Total"),                  # bare prefix at camelCase boundary
+    ("cbAgree", "Agree"),
+    ("tb_notes", "Notes"),                 # delimited prefix
+    ("cbc_count", "Cbc Count"),            # NOT a prefix — must stay intact
+    ("rbi_total", "Rbi Total"),
 ])
 def test_slug_to_label(raw, expected):
     assert _slug_to_label(raw) == expected

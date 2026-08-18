@@ -51,12 +51,21 @@ def _slug_to_label(raw: str) -> str:
     """
     s = raw.strip()
 
-    # Strip common prefixes that encode field type but not meaning
-    for prefix in ("txt_", "tb_", "cb_", "rb_", "dd_", "btn_", "tf_", "chk_",
-                   "txt", "tb", "cb", "rb"):
+    # Strip common field-type prefixes that encode type but not meaning.
+    # Delimited prefixes ("cb_", "rb_", ...) are unambiguous. Bare prefixes
+    # ("cb", "rb", ...) are only stripped at a camelCase boundary (next char
+    # upper-case), so real names like "cbc_count" or "rbi_total" are left
+    # intact instead of being mangled to "C Count" / "I Total".
+    for prefix in ("txt_", "tb_", "cb_", "rb_", "dd_", "btn_", "tf_", "chk_"):
         if s.lower().startswith(prefix) and len(s) > len(prefix):
             s = s[len(prefix):]
             break
+    else:
+        for prefix in ("txt", "tb", "cb", "rb", "tf", "dd", "chk", "btn"):
+            if (s.lower().startswith(prefix) and len(s) > len(prefix)
+                    and s[len(prefix)].isupper()):
+                s = s[len(prefix):]
+                break
 
     # Split camelCase
     s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)

@@ -37,10 +37,21 @@ _GENERIC_PATTERNS = [
     re.compile(r"^\w{1,3}\d{3,}$"),  # e.g. "img001", "p12345" — filename fragments
 ]
 
+# Alt text that is just an image filename ("banner.png", "DSC_0421.JPG",
+# "screen-shot.jpeg") is a non-descriptive auto-fill — one of the most common
+# real-world WCAG 1.1.1 failures. Matched on the RAW alt before punctuation is
+# stripped, since the extension dot is what identifies it.
+_IMAGE_FILENAME = re.compile(
+    r"^[\w\-. ]+\.(png|jpe?g|gif|svg|bmp|tiff?|webp|heic|ico)$", re.I)
+
 
 def _is_generic(alt: str) -> bool:
+    raw = alt.strip()
+    if _IMAGE_FILENAME.match(raw):
+        return True
     cleaned = re.sub(r"[^\w\s]", "", alt).strip().lower()
-    if not cleaned:
+    if len(cleaned) <= 2:
+        # Empty, or too short to describe anything ("a", "x", "12", ".").
         return True
     if cleaned in _GENERIC_EXACT:
         return True
