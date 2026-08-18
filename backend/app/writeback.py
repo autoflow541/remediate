@@ -528,6 +528,13 @@ class StructTreeBuilder:
             elif op == "T*":
                 tlm = _mat_mul((1, 0, 0, 1, 0, -leading), tlm)
                 tm = tlm
+            elif op in ("'", '"'):
+                # ' = (T* then show);  " = (set word/char spacing, T*, show).
+                # Both perform an implicit line move BEFORE showing, so advance
+                # the text line matrix here — otherwise the glyphs bind at the
+                # previous line's position and can land in the wrong element.
+                tlm = _mat_mul((1, 0, 0, 1, 0, -leading), tlm)
+                tm = tlm
 
             # --- strip PRE-EXISTING marked-content operators ---
             # Rebuild mode replaces the whole structure tree, so any BMC/BDC/EMC
