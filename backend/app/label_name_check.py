@@ -100,9 +100,9 @@ def check_label_in_name(pdf_path: str) -> list[dict]:
         fitz_doc = fitz.open(pdf_path)
 
         # Build page object id → fitz page index
-        page_id_map: dict[int, int] = {}
+        page_id_map: dict[tuple, int] = {}
         for idx, page in enumerate(pdf.pages):
-            page_id_map[id(page.obj)] = idx
+            page_id_map[page.obj.objgen] = idx
 
         def _check_field(field_obj):
             """Recursively check a field (handles field hierarchy)."""
@@ -137,7 +137,11 @@ def check_label_in_name(pdf_path: str) -> list[dict]:
                 if not rect_val or not pg_obj:
                     return
 
-                page_idx = page_id_map.get(id(pg_obj.obj if hasattr(pg_obj, "obj") else pg_obj))
+                _pg_target = pg_obj.obj if hasattr(pg_obj, "obj") else pg_obj
+                try:
+                    page_idx = page_id_map.get(_pg_target.objgen)
+                except Exception:
+                    page_idx = None
                 if page_idx is None:
                     return
 

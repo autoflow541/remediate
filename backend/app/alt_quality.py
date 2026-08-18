@@ -77,7 +77,7 @@ def _check_struct_node(obj, page_map: dict, issues: list[dict], _depth: int = 0)
         pg_ref = obj.get("/Pg")
         if pg_ref is not None:
             try:
-                page_num = page_map.get(id(pg_ref))
+                page_num = page_map.get(pg_ref.objgen)
             except Exception:
                 pass
 
@@ -144,11 +144,17 @@ def check_alt_quality(pdf_path: str) -> list[dict]:
     except Exception:
         return []
 
-    # Build page_num lookup: object id → 1-based page number
-    page_map: dict[int, int] = {}
+    # Build page_num lookup: page objgen → 1-based page number.
+    # Keyed by .objgen, not id(): pikepdf returns a fresh wrapper per access,
+    # so id(page.obj) never matches id(figure["/Pg"]) and the page came back
+    # None on every issue.
+    page_map: dict[tuple, int] = {}
     try:
         for i, page in enumerate(pdf.pages):
-            page_map[id(page.obj)] = i + 1
+            try:
+                page_map[page.obj.objgen] = i + 1
+            except Exception:
+                pass
     except Exception:
         pass
 

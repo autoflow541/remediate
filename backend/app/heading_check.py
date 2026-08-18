@@ -31,11 +31,18 @@ def check_headings(pdf_path: str) -> list[dict]:
     except Exception:
         return []
 
-    # Build page number lookup: object id → 1-based page number
-    page_map: dict[int, int] = {}
+    # Build page number lookup: page objgen → 1-based page number.
+    # NOTE: keyed by .objgen, not id(): pikepdf hands back a fresh Python
+    # wrapper each time an indirect object is accessed, so id(page.obj) and
+    # id(struct_elem["/Pg"]) differ even for the same page — which silently
+    # made every issue's page come back None.
+    page_map: dict[tuple, int] = {}
     try:
         for i, page in enumerate(pdf.pages):
-            page_map[id(page.obj)] = i + 1
+            try:
+                page_map[page.obj.objgen] = i + 1
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -59,7 +66,7 @@ def check_headings(pdf_path: str) -> list[dict]:
             pg = obj.get("/Pg")
             if pg is not None:
                 try:
-                    page_num = page_map.get(id(pg))
+                    page_num = page_map.get(pg.objgen)
                 except Exception:
                     pass
             headings.append({"level": level, "text": text, "page": page_num})

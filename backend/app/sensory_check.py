@@ -108,7 +108,7 @@ def _collect_text_nodes(obj, page_map: dict, _depth: int = 0) -> list[dict]:
     try:
         pg = obj.get("/Pg")
         if pg is not None:
-            page_num = page_map.get(id(pg))
+            page_num = page_map.get(pg.objgen)
     except Exception:
         pass
 
@@ -157,10 +157,10 @@ def check_sensory(pdf_path: str) -> list[dict]:
     except Exception:
         return []
 
-    page_map: dict[int, int] = {}
+    page_map: dict[tuple, int] = {}
     try:
         for i, page in enumerate(pdf.pages):
-            page_map[id(page.obj)] = i + 1
+            page_map[page.obj.objgen] = i + 1
     except Exception:
         pass
 

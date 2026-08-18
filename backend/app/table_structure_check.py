@@ -28,7 +28,7 @@ def _page_of(obj, page_map: dict) -> int | None:
     try:
         pg = obj.get("/Pg")
         if pg is not None:
-            return page_map.get(id(pg))
+            return page_map.get(pg.objgen)
     except Exception:
         pass
     return None
@@ -242,10 +242,10 @@ def check_table_structure(pdf_path: str) -> list[dict[str, Any]]:
     except Exception:
         return []
 
-    page_map: dict[int, int] = {}
+    page_map: dict[tuple, int] = {}
     try:
         for i, page in enumerate(pdf.pages):
-            page_map[id(page.obj)] = i + 1
+            page_map[page.obj.objgen] = i + 1
     except Exception:
         pass
 
