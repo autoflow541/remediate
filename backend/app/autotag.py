@@ -166,7 +166,12 @@ def _heuristic_autotag(pdf_path: str) -> dict:
     try:
         for page_num, page in enumerate(doc, start=1):
             try:
-                raw = page.get_text("rawdict", flags=0)
+                # "dict" (not "rawdict"): dict spans carry a ready "text" key,
+                # which this heuristic reads below. rawdict spans instead carry
+                # a per-character "chars" list and NO "text" key, so every span
+                # read empty and the fallback tagger silently produced zero
+                # nodes on every document.
+                raw = page.get_text("dict")
                 blocks = raw.get("blocks", []) or []
                 page_h = page.rect.height   # PyMuPDF device height for Y-flip
                 pages_blocks.append((page_num, blocks, page_h))
@@ -362,6 +367,14 @@ def autotag_pdf(pdf_path: str, detect_headers: bool = True) -> dict:
     if not odl_ok or manifest is None:
         manifest = _heuristic_autotag(pdf_path)
         manifest.setdefault("source", {})["odlFallback"] = True
+    elif not manifest.get("nodes"):
+        # ODL ran but returned an empty structure — it does this on some valid
+        # text PDFs. Try the PyMuPDF heuristic before emitting an untagged
+        # result (the OCR path below still covers genuinely scanned docs).
+        heur = _heuristic_autotag(pdf_path)
+        if heur.get("nodes"):
+            manifest = heur
+            manifest.setdefault("source", {})["odlFallback"] = "empty-odl"
 
     if detect_headers:
         manifest["source"]["tables"] = analyze_tables(manifest)
