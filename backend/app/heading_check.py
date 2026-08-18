@@ -37,14 +37,47 @@ def check_headings(pdf_path: str) -> list[dict]:
     # id(struct_elem["/Pg"]) differ even for the same page — which silently
     # made every issue's page come back None.
     page_map: dict[tuple, int] = {}
+    page_by_objgen: dict[tuple, object] = {}
     try:
         for i, page in enumerate(pdf.pages):
             try:
                 page_map[page.obj.objgen] = i + 1
+                page_by_objgen[page.obj.objgen] = page
             except Exception:
                 pass
     except Exception:
         pass
+
+    from .mc_text import page_mcid_texts, element_mcids
+    _mcid_cache: dict[tuple, dict] = {}  # page objgen -> {mcid: text}
+
+    def _heading_text(obj, pg) -> str:
+        """Heading text: /Alt if set, else the MCID-referenced content."""
+        alt = obj.get("/Alt")
+        if alt and str(alt).strip():
+            return str(alt).strip()
+        if pg is None:
+            return ""
+        try:
+            og = pg.objgen
+        except Exception:
+            return ""
+        page = page_by_objgen.get(og)
+        if page is None:
+            return ""
+        if og not in _mcid_cache:
+            _mcid_cache[og] = page_mcid_texts(page)
+        texts = _mcid_cache[og]
+        return " ".join(texts.get(m, "") for m in element_mcids(obj)).strip()
+
+    def _has_struct_child(obj) -> bool:
+        try:
+            import pikepdf as _pk
+            k = obj.get("/K")
+            kids = list(k) if isinstance(k, _pk.Array) else ([k] if k is not None else [])
+            return any(hasattr(kid, "get") and kid.get("/S") is not None for kid in kids)
+        except Exception:
+            return False
 
     headings: list[dict] = []
 
@@ -59,9 +92,6 @@ def check_headings(pdf_path: str) -> list[dict]:
         # Heading: /H, /H1 … /H6
         if tag in ("/H", "/H1", "/H2", "/H3", "/H4", "/H5", "/H6"):
             level = 1 if tag == "/H" else int(tag[2])
-            # Extract text from /Alt or concatenate marked-content
-            alt = obj.get("/Alt")
-            text = str(alt).strip() if alt else ""
             page_num = None
             pg = obj.get("/Pg")
             if pg is not None:
@@ -69,7 +99,14 @@ def check_headings(pdf_path: str) -> list[dict]:
                     page_num = page_map.get(pg.objgen)
                 except Exception:
                     pass
-            headings.append({"level": level, "text": text, "page": page_num})
+            text = _heading_text(obj, pg)
+            headings.append({
+                "level": level, "text": text, "page": page_num,
+                # A heading is "empty" only when it wraps no text AND has no
+                # child structure that could carry the text — avoids false
+                # positives on section-style headings.
+                "empty": (not text) and (not _has_struct_child(obj)),
+            })
 
         try:
             kids = obj.get("/K")
@@ -129,5 +166,22 @@ def check_headings(pdf_path: str) -> list[dict]:
                 ),
             })
         prev_level = lvl
+
+    # Check for empty headings — a heading tag wrapping no text at all is a
+    # WCAG 1.3.1 / 2.4.6 failure (screen readers announce a heading with nothing
+    # to read). Only flagged when the element has neither text nor child
+    # structure, so section-style headings aren't false-flagged.
+    for h in headings:
+        if h.get("empty"):
+            issues.append({
+                "type": "empty_heading",
+                "level": h["level"],
+                "page": h.get("page"),
+                "text": "",
+                "description": (
+                    f"H{h['level']} heading has no text content "
+                    f"on page {h.get('page') or '?'}"
+                ),
+            })
 
     return issues

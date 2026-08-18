@@ -156,6 +156,33 @@ def extract_reading_order(pdf_path: str) -> list[dict]:
         log.warning("extract_reading_order: cannot open %s: %s", pdf_path, exc)
         return []
 
+    # page objgen -> pikepdf Page, so a struct element's MCID text can be
+    # recovered from its page's content stream (parsed once, cached).
+    page_by_objgen: dict = {}
+    try:
+        for page in pdf.pages:
+            page_by_objgen[page.obj.objgen] = page
+    except Exception:
+        pass
+    _mcid_cache: dict = {}
+
+    def _mcid_preview(obj, max_len: int = 80) -> str:
+        from .mc_text import page_mcid_texts, element_mcids
+        try:
+            pg = obj.get("/Pg")
+            if pg is None:
+                return ""
+            og = pg.objgen
+        except Exception:
+            return ""
+        page = page_by_objgen.get(og)
+        if page is None:
+            return ""
+        if og not in _mcid_cache:
+            _mcid_cache[og] = page_mcid_texts(page)
+        texts = _mcid_cache[og]
+        return " ".join(texts.get(m, "") for m in element_mcids(obj)).strip()[:max_len]
+
     try:
         struct_root = pdf.Root.get("/StructTreeRoot")
         if struct_root is None:
@@ -226,11 +253,12 @@ def extract_reading_order(pdf_path: str) -> list[dict]:
                 elif isinstance(k, pk.Dictionary):
                     n_children = 1
 
+                preview = _text_preview(obj, pk) or _mcid_preview(obj)
                 elements.append({
                     "id": f"e{idx}",
                     "type": label,
                     "tag": tag,
-                    "preview": _text_preview(obj, pk),
+                    "preview": preview,
                     "level": 0,
                     "children": n_children,
                 })
