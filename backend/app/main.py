@@ -472,6 +472,7 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "tableStructureIssues": table_structure_issues, "tableStructureIssueCount": len(table_structure_issues),
         "languageIssues": language_issues, "languageIssueCount": len(language_issues),
         "aiAccessibilityScore": ai_accessibility_score,
+        "aiCost": (visual_review or {}).get("cost"),
         "regressionGuard": regression_guard,
         "remediationMode": report.get("mode", "rebuild"),
         "validationError": result.validation_error,
