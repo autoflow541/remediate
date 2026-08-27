@@ -32,12 +32,19 @@ top level). What remains is the AI action: let the vision model emit the correct
 order from the render and call `apply_reading_order` — needs a veraPDF run on the
 VM to confirm the rewritten tree stays conformant.
 
-## 4. 🧪 Close the base-14 font-embedding gap (veraPDF 7.21.4.1)
-The last remaining machine-conformance failure in the corpus (t02/t19:
-unembedded Times-Roman). Harden `_locate_font_with_fallback` (weight/style-aware
-substitute selection) and the Type1→TrueType `/Subtype` switch so embedding a
-base-14 font doesn't trade 7.21.4.1 for a 7.21.5 width mismatch. Touches every
-document's fonts — needs its own benchmark run.
+## 4. ✅ Close the base-14 font-embedding gap (veraPDF 7.21.4.1)
+Substitute selection is now weight/style-aware. `_locate_font_with_fallback`
+falls back to a family+weight+style resolver (`_resolve_substitutes`) after the
+curated map, so **unmapped names — bare families like "Times", subset prefixes,
+odd spellings — resolve to the right serif/sans/mono variant** instead of
+silently not embedding. Weight/style come from the name and, when present, the
+descriptor `/Flags` + `/ItalicAngle`. veraPDF-verified against a base-14 variant
+sweep (Times/Helvetica/Courier/Arial × regular/bold/italic + bare "Times") in a
+throwaway container: bare "Times" went FAIL→compliant, all others stayed
+compliant, no 7.21.5 width mismatch introduced. Unit-tested in
+`tests/test_font_embed.py`. *Ships to the live engine on the next image
+redeploy.* Remaining edge case (separate issue): autotag mishandles a custom
+`/Encoding /Differences` doc (7.1-* tagging cascade), unrelated to embedding.
 
 ## 5. ✅ AI language detection (`set_lang`) — document level shipped
 The vision pass now corrects a wrong/missing `/Lang` from what the page is
