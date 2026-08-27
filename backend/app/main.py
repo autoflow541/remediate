@@ -171,8 +171,7 @@ def submit_autotag_job(file: UploadFile = File(...), detect_headers: bool = Form
         status_code=202,
     )
 
-@app.post("/remediate", tags=["core"], summary="Remediate a PDF using a manifest — returns a tagged, accessible PDF")
-def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), flavour: str = Form(DEFAULT_FLAVOUR)) -> Response:
+def _remediate_impl(file: UploadFile, manifest: UploadFile, flavour: str = DEFAULT_FLAVOUR) -> Response:
     try:
         manifest_obj = json.loads(manifest.file.read())
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -541,6 +540,50 @@ def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), fl
         "X-Remediation-MCIDs": str(report.get("mcids", 0)),
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@app.post("/remediate", tags=["core"], summary="Remediate a PDF using a manifest — returns a tagged, accessible PDF")
+def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), flavour: str = Form(DEFAULT_FLAVOUR)) -> Response:
+    return _remediate_impl(file, manifest, flavour)
+
+
+@app.post("/jobs/remediate", status_code=202, tags=["batch"], summary="Submit an async remediation job (submit -> poll -> download)")
+def submit_remediate_job(file: UploadFile = File(...), manifest: UploadFile = File(...), flavour: str = Form(DEFAULT_FLAVOUR)) -> JSONResponse:
+    # Read the inputs now so the HTTP request returns immediately (202); the heavy
+    # remediation runs in a background worker — no proxy timeout on cold starts.
+    pdf_bytes = file.file.read()
+    manifest_bytes = manifest.file.read()
+    fname = file.filename or "document.pdf"
+
+    def _work(job):
+        import io
+        up_pdf = UploadFile(io.BytesIO(pdf_bytes), filename=fname)
+        up_man = UploadFile(io.BytesIO(manifest_bytes), filename="manifest.json")
+        resp = _remediate_impl(up_pdf, up_man, flavour)  # reuses the full pipeline
+        fd, out = tempfile.mkstemp(suffix=".pdf"); os.close(fd)
+        with open(out, "wb") as fh:
+            fh.write(bytes(resp.body))
+        meta = {}
+        try:
+            meta = json.loads(resp.headers.get("X-Conformance", "{}"))
+        except Exception:
+            pass
+        base = os.path.splitext(fname)[0]
+        return {
+            "path": out,
+            "filename": f"{base}.remediated.pdf",
+            "compliant": meta.get("compliant"),
+            "failedRules": meta.get("failedRules"),
+            "aiCost": meta.get("aiCost"),
+        }
+
+    job = _jobs.submit("remediate", _work)
+    return JSONResponse(
+        {"id": job.id, "status": job.status,
+         "statusUrl": f"/jobs/{job.id}", "resultUrl": f"/jobs/{job.id}/result"},
+        status_code=202,
+    )
+
 
 @app.post("/quickfix", tags=["patch"], summary="Quick Fix All — apply every AI-driven auto-fix to an already-remediated PDF in one pass")
 def quickfix(file: UploadFile = File(...)) -> Response:
