@@ -23,9 +23,13 @@ import json
 import logging
 import os
 
+from .ai_config import MODEL_VISION
+
 log = logging.getLogger(__name__)
 
-_MODEL = "claude-opus-4-8"
+# Vision judgment/triage model — Sonnet by default (was Opus, ~5x the cost per
+# token on the per-page vision path). Override with AI_VISUAL_CHECK_MODEL.
+_MODEL = MODEL_VISION
 _MAX_TOKENS = 16000
 _MAX_PAGES = 4           # pages rendered into the review (cost/latency cap)
 _TARGET_WIDTH = 880      # rendered page width in px — enough for layout judgment
