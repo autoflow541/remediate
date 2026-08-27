@@ -131,16 +131,73 @@ def _locate_system_font(family: str) -> str | None:
     return None
 
 
-def _locate_font_with_fallback(base_font: str) -> str | None:
-    """Try exact font name, then Type 1 metric-compatible substitutes."""
+# Metric-compatible substitute families by script, in preference order.
+_FAMILY_SERIF = ["Liberation Serif", "DejaVu Serif", "FreeSerif"]
+_FAMILY_SANS = ["Liberation Sans", "DejaVu Sans", "FreeSans"]
+_FAMILY_MONO = ["Liberation Mono", "DejaVu Sans Mono", "FreeMono"]
+
+# FontDescriptor /Flags bits (PDF 32000-1 Table 121): Italic = bit 7 (1<<6),
+# ForceBold = bit 19 (1<<18).
+_FLAG_ITALIC = 1 << 6
+_FLAG_FORCE_BOLD = 1 << 18
+
+_SERIF_HINTS = ("times", "georgia", "cambria", "garamond", "minion",
+                "palatino", "bookantiqua", "serif", "roman")
+_MONO_HINTS = ("courier", "consolas", "mono")
+
+
+def _base_family(norm: str) -> list[str]:
+    """Pick the substitute script (serif / sans / mono) from a normalised name."""
+    if any(h in norm for h in _MONO_HINTS):
+        return _FAMILY_MONO
+    if any(h in norm for h in _SERIF_HINTS):
+        return _FAMILY_SERIF
+    # Symbol/dingbat fonts have no metric-compatible Latin match; sans at least
+    # renders. Everything else (helvetica/arial/verdana/tahoma/calibri/…) is sans.
+    return _FAMILY_SANS
+
+
+def _style_of(norm: str, flags: int, italic_angle: float) -> tuple[bool, bool]:
+    """Derive (bold, italic) from the name and, when present, /Flags + /ItalicAngle."""
+    bold = ("bold" in norm or "black" in norm or "heavy" in norm
+            or "semibold" in norm or bool(flags & _FLAG_FORCE_BOLD))
+    italic = ("italic" in norm or "oblique" in norm
+              or bool(flags & _FLAG_ITALIC) or bool(italic_angle))
+    return bold, italic
+
+
+def _resolve_substitutes(base_font: str, flags: int = 0, italic_angle: float = 0.0) -> list[str]:
+    """Ordered metric-compatible substitute family names for *base_font*.
+
+    The curated `_TYPE1_SUBSTITUTES` map is tried first (behaviour unchanged for
+    known names). A family+weight+style fallback is then appended so unmapped
+    names — bare families like "Times", subset prefixes, and unusual spellings —
+    still resolve to the correct serif/sans/mono variant instead of failing to
+    embed (veraPDF 7.21.4.1). Weight/style come from the name and, when the font
+    has a descriptor, its /Flags and /ItalicAngle.
+    """
+    norm = _normalise_name(base_font)
+    out: list[str] = list(_TYPE1_SUBSTITUTES.get(norm, []))
+    bold, italic = _style_of(norm, flags, italic_angle)
+    suffix = ("Bold " if bold else "") + ("Italic" if italic else "")
+    suffix = (" " + suffix.strip()) if suffix.strip() else ""
+    for fam in _base_family(norm):
+        styled = (fam + suffix).strip()
+        if styled not in out:
+            out.append(styled)
+        if fam not in out:  # plain family as a final fallback
+            out.append(fam)
+    return out
+
+
+def _locate_font_with_fallback(base_font: str, flags: int = 0, italic_angle: float = 0.0) -> str | None:
+    """Try exact font name, then metric-compatible substitutes (weight/style-aware)."""
     # Exact match first
     p = _locate_system_font(base_font)
     if p:
         return p
 
-    # Substitute lookup
-    key = _normalise_name(base_font)
-    for sub_family in _TYPE1_SUBSTITUTES.get(key, []):
+    for sub_family in _resolve_substitutes(base_font, flags, italic_angle):
         p = _locate_system_font(sub_family)
         if p:
             log.info("font_embed: substituting %r with %r (%s)", base_font, sub_family, p)
@@ -443,8 +500,18 @@ def embed_fonts(pdf_path: str, font_issues: list[dict] | None = None) -> tuple[i
                     )
 
                     if not already_embedded and matched:
-                        # Try exact match first, then substitutes
-                        sys_path = _locate_font_with_fallback(base_font)
+                        # Try exact match first, then substitutes. Pass the
+                        # descriptor's weight/style so an ambiguous name (e.g.
+                        # bare "Times" with a bold flag) picks the right variant.
+                        try:
+                            _flags = int(desc.get("/Flags", 0) or 0)
+                        except Exception:
+                            _flags = 0
+                        try:
+                            _ital = float(desc.get("/ItalicAngle", 0) or 0)
+                        except Exception:
+                            _ital = 0.0
+                        sys_path = _locate_font_with_fallback(base_font, _flags, _ital)
                         if sys_path:
                             font_data = _subset_font(sys_path)
                             if font_data and not _can_extract_widths(font_data):
