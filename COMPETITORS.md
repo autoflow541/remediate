@@ -92,6 +92,35 @@ AI alt-text but depends on Adobe+AWS and isn't production-grade.
 
 ---
 
+## 2b. Tech stack (what they're built on)
+| Vendor | Core engine | Bindings / API | Deploy | AI approach | Platforms |
+|---|---|---|---|---|---|
+| **PDFix SDK** | High-perf **C++** library, **no external deps**; multi-threaded batch + worker queue | **Python, C#, Java, C++, Node.js** (NuGet `PDFix.SDK`); CLI; unified API | **On-prem only** (no cloud), **Docker/Kubernetes**, CI/CD | Pluggable **"Actions Marketplace"** — Docker/local AI models: **IBM Docling, OpenAI, Amazon Textract** for alt-text, OCR, formulas, lang detect, table summaries | Linux (x86_64/aarch64), Windows x64, macOS (x64/arm64) |
+| **axesPDF** (axes4 GmbH, DE) | **Windows desktop**, **.NET Framework 4.8**; installer = bootstrapper + MSIs; sibling `axesFlip` on .NET | Desktop app (no public SDK) | **Local desktop** (Win 10/11) | **AI added in 2.5** to *assist* manual checks (human stays in control); screen-reader preview | Windows only |
+| **Equidox** (Onix) | **SaaS** + **Equidox AI**; **ML + computer vision** "Smart Zone Detector" (detects elements in untagged PDFs) | **REST API** (delivery/integration); managed service | **Cloud (Google Cloud Storage, encrypted)** or on-prem; batch or on-demand | ML/CV models auto-tag; best on **templated** docs | Cloud / on-prem |
+| **Allyant / CommonLook** | Legacy **Acrobat plugin + standalone desktop** (.NET/Windows heritage); now suite + **human services** | Desktop; service delivery | Desktop + professional services | Limited AI; **human experts** do the heavy remediation | Windows |
+| **Adobe** | Acrobat + **PDF Services / Auto-Tag API** (cloud) | REST API, SDKs | **Cloud API** | ML auto-tag; Sensei | Cloud / desktop |
+| **ASU CIC** (OSS) | **AWS**: S3, Lambda, Step Functions, **ECS Fargate**, CloudWatch; **Adobe PDF Services API** | AWS-native | AWS only | **AWS Bedrock (Nova Pro)** for alt-text/enhance | AWS |
+| **OpenDataLoader** (OSS) | **Java 11** + **Python 3.10+**; veraPDF-validated tagging | CLI / library | Local / container | Optional **Docling** for tables | Cross-platform (JVM) |
+| **Auto-Flow (us)** | **Python 3.12 (FastAPI)** + **pikepdf** + **fontTools** + **veraPDF (JRE 11)** + **OpenDataLoader**; React/Vite studio | FastAPI REST (`/validate`, `/autotag`, `/remediate`, …) | **Self-hosted Docker**, Caddy | **Claude (Anthropic) vision** makes per-page calls; veraPDF verify→fix loop | Linux/Docker |
+
+**Stack reads:**
+- **PDFix is the architectural benchmark**: a dependency-free C++ core with 5-language
+  bindings, on-prem, container/queue-ready, and a *pluggable* AI marketplace. Our
+  FastAPI/Python core is more approachable but **single-language + no worker queue
+  yet** — the batch/throughput gap again (ROADMAP #6).
+- **We're the only one wiring a frontier vision LLM (Claude) as the decision-maker**;
+  others use narrower ML/CV (Equidox), cloud AI services (ASU→Bedrock, Adobe→Sensei),
+  or pluggable model slots (PDFix). That's our differentiator **and** our cost/latency
+  risk to manage.
+- **axesPDF & CommonLook are Windows-desktop-bound**; we (and PDFix/Equidox) win on
+  server/automation. **ASU is AWS-locked; Adobe is cloud-only** — our **self-hosted,
+  no-lock-in** posture is a real enterprise/gov selling point.
+- **veraPDF is the shared source of truth** (us, ODL, axes4's PAC checker all lean on
+  it) — leaning into "veraPDF-verified" is credible, not marketing fluff.
+
+---
+
 ## 3. Messaging & keyword patterns (what they ALL say)
 Recurring keywords to know (and rank for): **PDF/UA (ISO 14289-1)**, **WCAG 2.1/2.2
 AA**, **Section 508**, **ADA Title II**, **European Accessibility Act**, "**at
@@ -168,8 +197,9 @@ lead magnet; **no public pricing** (all "book a demo").
 - accesspdf — https://github.com/laurenaulet/accesspdf
 - pdf-accessibility topic — https://github.com/topics/pdf-accessibility
 - PDFix — https://pdfix.net/ · https://pdfix.net/best-pdf-accessibility-tools-2026/ · https://pdfix.net/can-ai-automatically-fix-pdf-accessibility-issues/
-- axes4 / axesPDF — https://www.axes4.com/
-- Equidox — https://equidox.co/
+- PDFix SDK (stack) — https://pdfix.net/products/pdfix-sdk/ · https://github.com/pdfix/PDFixSDK-Documentation · https://www.nuget.org/packages/PDFix.SDK
+- axes4 / axesPDF (stack) — https://www.axes4.com/en/desktop-software/axespdf · https://support.axes4.com/hc/en-us/articles/7371808093714-System-requirements · https://www.axes4.com/en/technology/axesflip
+- Equidox — https://equidox.co/ · https://equidox.co/pdf-solutions/high-volume-solutions/ · https://equidox.co/blog/integrating-artificial-intelligence-and-automation-into-equidox/
 - Allyant (CommonLook) — https://allyant.com/
 - Continual Engine (PREP) — https://www.continualengine.com/blog/top-pdf-remediation-service-providers/
 - DOJ Title II extension — https://www.consumerfinancialserviceslawmonitor.com/2026/04/doj-extends-title-ii-ada-web-accessibility-rule-compliance-deadlines-for-state-and-local-governments/
