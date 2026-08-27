@@ -120,6 +120,57 @@ def autotag(file: UploadFile = File(...), detect_headers: bool = Form(True)) -> 
     manifest["source"]["nodeCount"] = count_nodes(manifest["nodes"])
     return JSONResponse(manifest)
 
+# ── Async jobs (long-op queue; ROADMAP/STRATEGY #6) ──────────────────────────
+# submit -> poll -> download, so long operations don't die at the proxy on a
+# cold start. First wired to autotag; /remediate routes through this next
+# (needs its core extracted from the sync handler).
+from fastapi.responses import FileResponse  # noqa: E402
+from .jobs import registry as _jobs          # noqa: E402
+
+@app.get("/jobs/{job_id}", tags=["batch"], summary="Async job status")
+def job_status(job_id: str) -> JSONResponse:
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    return JSONResponse(job.public())
+
+@app.get("/jobs/{job_id}/result", tags=["batch"], summary="Download an async job's result")
+def job_result(job_id: str):
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    if job.status == "error":
+        raise HTTPException(status_code=500, detail=job.error or "Job failed.")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail=f"Job not finished (status: {job.status}).")
+    res = job.result or {}
+    if res.get("json") is not None:
+        return JSONResponse(res["json"])
+    path = res.get("path")
+    if path and os.path.exists(path):
+        return FileResponse(path, media_type="application/pdf",
+                            filename=res.get("filename", "remediated.pdf"))
+    raise HTTPException(status_code=410, detail="Result is no longer available.")
+
+@app.post("/jobs/autotag", status_code=202, tags=["batch"], summary="Submit an async autotag job")
+def submit_autotag_job(file: UploadFile = File(...), detect_headers: bool = Form(True)) -> JSONResponse:
+    path = _save_upload(file)
+    fname = file.filename
+    def _work(job):
+        try:
+            manifest = autotag_pdf(path, detect_headers=detect_headers)
+            if fname: manifest["source"]["filename"] = fname
+            manifest["source"]["nodeCount"] = count_nodes(manifest["nodes"])
+            return {"json": manifest}
+        finally:
+            if os.path.exists(path): os.unlink(path)
+    job = _jobs.submit("autotag", _work)
+    return JSONResponse(
+        {"id": job.id, "status": job.status,
+         "statusUrl": f"/jobs/{job.id}", "resultUrl": f"/jobs/{job.id}/result"},
+        status_code=202,
+    )
+
 @app.post("/remediate", tags=["core"], summary="Remediate a PDF using a manifest — returns a tagged, accessible PDF")
 def remediate(file: UploadFile = File(...), manifest: UploadFile = File(...), flavour: str = Form(DEFAULT_FLAVOUR)) -> Response:
     try:
