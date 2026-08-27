@@ -123,9 +123,8 @@ def score_accessibility(manifest: dict) -> dict[str, Any] | None:
     Result keys: grade, score, summary, priorities.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    log.warning("ai_score: called, key_len=%d", len(api_key))
     if not api_key:
-        log.warning("ai_score: no key, returning None")
+        log.debug("ai_score: ANTHROPIC_API_KEY not set; skipping AI score")
         return None
 
     try:
