@@ -36,6 +36,8 @@ log = logging.getLogger(__name__)
 # at this vision-grounded structural comparison, and every fix it proposes
 # still passes through the validate-guard below (reverted if veraPDF regresses),
 # so the speed/quality trade is safe. Override with AI_VISUAL_MODEL.
+from .ai_config import cost_usd
+
 _MODEL = os.environ.get("AI_VISUAL_MODEL", "claude-sonnet-5")
 _MAX_TOKENS = 8000
 _ALLOWED_RETAGS = {"H1", "H2", "H3", "H4", "H5", "H6", "P", "Caption"}
@@ -507,9 +509,14 @@ def run_visual_fix(pdf_path: str, max_pages: int = 4) -> dict:
             if os.path.exists(backup):
                 os.unlink(backup)
 
+    _usage = getattr(response, "usage", None)
+    _in = int(getattr(_usage, "input_tokens", 0) or 0)
+    _out = int(getattr(_usage, "output_tokens", 0) or 0)
     return {
         "available": True,
         "model": _MODEL,
+        "cost": {"model": _MODEL, "inputTokens": _in, "outputTokens": _out,
+                 "costUsd": round(cost_usd(_MODEL, _in, _out), 4)},
         "pagesReviewed": len(pages),
         "summary": parsed.get("summary", ""),
         "applied": applied,
