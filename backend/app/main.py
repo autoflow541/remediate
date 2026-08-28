@@ -148,7 +148,7 @@ def job_result(job_id: str):
         return JSONResponse(res["json"])
     path = res.get("path")
     if path and os.path.exists(path):
-        return FileResponse(path, media_type="application/pdf",
+        return FileResponse(path, media_type=res.get("mediaType", "application/pdf"),
                             filename=res.get("filename", "remediated.pdf"))
     raise HTTPException(status_code=410, detail="Result is no longer available.")
 
@@ -581,6 +581,65 @@ def submit_remediate_job(file: UploadFile = File(...), manifest: UploadFile = Fi
     job = _jobs.submit("remediate", _work)
     return JSONResponse(
         {"id": job.id, "status": job.status,
+         "statusUrl": f"/jobs/{job.id}", "resultUrl": f"/jobs/{job.id}/result"},
+        status_code=202,
+    )
+
+
+@app.post("/jobs/batch", status_code=202, tags=["batch"], summary="Submit an async batch remediation job (submit -> poll -> download a ZIP)")
+def submit_batch_job(files: list[UploadFile] = File(...), flavour: str = Form(DEFAULT_FLAVOUR)) -> JSONResponse:
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(status_code=400, detail=f"Batch limited to {MAX_BATCH_FILES} files per request.")
+    # Read every file now so the request returns immediately (202); the batch
+    # runs in a background worker that reports per-file progress.
+    payload = [(f.filename or f"document-{i + 1}.pdf", f.file.read()) for i, f in enumerate(files)]
+
+    def _work(job):
+        import io, zipfile
+        results = []
+        zbuf = io.BytesIO()
+        n = max(1, len(payload))
+        with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, (fname, data) in enumerate(payload):
+                tmp = None
+                try:
+                    fd, tmp = tempfile.mkstemp(suffix=".pdf"); os.close(fd)
+                    with open(tmp, "wb") as fh:
+                        fh.write(data)
+                    manifest = autotag_pdf(tmp, detect_headers=True)
+                    manifest.pop("_questions", None)
+                    up_pdf = UploadFile(io.BytesIO(data), filename=fname)
+                    up_man = UploadFile(io.BytesIO(json.dumps(manifest).encode()), filename="manifest.json")
+                    resp = _remediate_impl(up_pdf, up_man, flavour)
+                    meta = {}
+                    try:
+                        meta = json.loads(resp.headers.get("X-Conformance", "{}"))
+                    except Exception:
+                        pass
+                    base = os.path.splitext(os.path.basename(fname))[0]
+                    zf.writestr(f"{base}.remediated.pdf", bytes(resp.body))
+                    results.append({"filename": fname, "ok": True,
+                                    "compliant": meta.get("compliant"), "failedRules": meta.get("failedRules")})
+                except Exception as exc:
+                    results.append({"filename": fname, "ok": False, "error": str(exc)[:200]})
+                finally:
+                    if tmp and os.path.exists(tmp):
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                job.touch(progress=int((i + 1) / n * 100))  # per-file progress
+            zf.writestr("results.json", json.dumps(results, indent=2))
+        fd, out = tempfile.mkstemp(suffix=".zip"); os.close(fd)
+        with open(out, "wb") as fh:
+            fh.write(zbuf.getvalue())
+        ok = sum(1 for r in results if r.get("ok"))
+        return {"path": out, "filename": "remediated-batch.zip", "mediaType": "application/zip",
+                "total": len(payload), "succeeded": ok, "failed": len(payload) - ok, "results": results}
+
+    job = _jobs.submit("batch", _work)
+    return JSONResponse(
+        {"id": job.id, "status": job.status, "count": len(payload),
          "statusUrl": f"/jobs/{job.id}", "resultUrl": f"/jobs/{job.id}/result"},
         status_code=202,
     )
