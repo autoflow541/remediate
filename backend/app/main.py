@@ -152,6 +152,20 @@ def job_result(job_id: str):
                             filename=res.get("filename", "remediated.pdf"))
     raise HTTPException(status_code=410, detail="Result is no longer available.")
 
+@app.get("/jobs/{job_id}/report", tags=["batch"], summary="HTML conformance/audit report for a completed remediation job")
+def job_report(job_id: str) -> Response:
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job id.")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail=f"Job not finished (status: {job.status}).")
+    data = (job.result or {}).get("reportData")
+    if not data:
+        raise HTTPException(status_code=404, detail="No conformance report for this job.")
+    from .audit_report import generate_report
+    html = generate_report((job.result or {}).get("filename", "document.pdf"), data)
+    return Response(content=html.encode("utf-8"), media_type="text/html; charset=utf-8")
+
 @app.post("/jobs/autotag", status_code=202, tags=["batch"], summary="Submit an async autotag job")
 def submit_autotag_job(file: UploadFile = File(...), detect_headers: bool = Form(True)) -> JSONResponse:
     path = _save_upload(file)
@@ -576,6 +590,7 @@ def submit_remediate_job(file: UploadFile = File(...), manifest: UploadFile = Fi
             "compliant": meta.get("compliant"),
             "failedRules": meta.get("failedRules"),
             "aiCost": meta.get("aiCost"),
+            "reportData": meta,  # full conformance dict, for /jobs/{id}/report
         }
 
     job = _jobs.submit("remediate", _work)

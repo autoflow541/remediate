@@ -56,7 +56,7 @@ class Job:
         if self.status == "error":
             d["error"] = self.error
         if self.status == "done" and isinstance(self.result, dict):
-            d["result"] = {k: v for k, v in self.result.items() if k not in ("path", "json")}
+            d["result"] = {k: v for k, v in self.result.items() if k not in ("path", "json", "reportData")}
             d["hasFile"] = bool(self.result.get("path"))
             d["hasJson"] = self.result.get("json") is not None
         return d
