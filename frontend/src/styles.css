@@ -65,6 +65,11 @@ textarea { resize: vertical; min-height: 80px; }
 .app-subtitle { font-size: 11px; text-align: center; margin-bottom: 24px; }
 .app-subtitle a { color: var(--muted); text-decoration: none; opacity: 0.6; }
 .app-subtitle a:hover { opacity: 1; text-decoration: underline; }
+/* Auto-Flow attribution/CTA — accessible: --accent (#7a5e00) is 6:1 on white,
+   full opacity, and padded links give a >=24px touch target (WCAG 2.5.8). */
+.site-cta { font-size: 13px; text-align: center; margin-top: 20px; color: var(--muted); line-height: 1.7; }
+.site-cta a { color: var(--accent); text-decoration: none; font-weight: 600; display: inline-block; padding: 6px 2px; }
+.site-cta a:hover { text-decoration: underline; }
 /* ── Upload two-path layout ──────────────────────────────────────────────── */
 .upload-paths {
   display: flex; align-items: stretch; gap: 0;
