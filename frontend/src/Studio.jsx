@@ -361,7 +361,7 @@ function UploadScreen({ onFile, onBatch, error }) {
           Process multiple PDFs at once
         </button>
       )}
-      <p className="app-subtitle">
+      <p className="site-cta">
         A free tool by{" "}
         <a href="https://auto-flow.co" target="_blank" rel="noopener noreferrer">Auto-Flow Automations</a>{" "}· Portland, OR<br />
         <a href="https://auto-flow.co" target="_blank" rel="noopener noreferrer">We build accessible sites, tools &amp; automation →</a>
