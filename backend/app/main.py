@@ -672,6 +672,91 @@ def submit_batch_job(files: list[UploadFile] = File(...), flavour: str = Form(DE
     )
 
 
+@app.post("/jobs/audit", status_code=202, tags=["batch"],
+          summary="Submit an async batch AUDIT job — validates every file without modifying it, returns a rollup findings report")
+def submit_audit_job(files: list[UploadFile] = File(...), flavour: str = Form(DEFAULT_FLAVOUR)) -> JSONResponse:
+    """Pure audit path for a document backlog: every file is checked against
+    veraPDF and left untouched (no autotag, no writeback, no AI) — for an
+    audit engagement that precedes, and is billed separately from, any
+    remediation work. Unlike /jobs/batch, the deliverable is a JSON rollup
+    (corpus-wide compliance rate + the most common failing clauses, each
+    cited with its WCAG Success Criterion), not a ZIP of modified PDFs."""
+    if flavour not in KNOWN_FLAVOURS:
+        raise HTTPException(status_code=400, detail=f"Unknown flavour {flavour!r}.")
+    if len(files) > MAX_BATCH_FILES:
+        raise HTTPException(status_code=400, detail=f"Batch limited to {MAX_BATCH_FILES} files per request.")
+    # Read every file now so the request returns immediately (202); the audit
+    # runs in a background worker that reports per-file progress.
+    payload = [(f.filename or f"document-{i + 1}.pdf", f.file.read()) for i, f in enumerate(files)]
+
+    def _work(job):
+        from .verapdf_explain import enrich_failures
+        per_file: list[dict] = []
+        clause_counts: dict[str, dict] = {}  # "clause-testNumber" -> rollup entry
+        n = max(1, len(payload))
+        for i, (fname, data) in enumerate(payload):
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=".pdf"); os.close(fd)
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                result = safe_validate_pdf(tmp, flavour=flavour)
+                d = result.to_dict()
+                failures = d.get("failures") or []
+                if flavour in ("ua1", "ua2") and failures:
+                    failures = enrich_failures(failures)
+                for f in failures:
+                    key = f"{f.get('clause')}-{f.get('test_number')}"
+                    entry = clause_counts.setdefault(key, {
+                        "clause": key,
+                        "title": f.get("plain_title"),
+                        "wcag": f.get("plain_wcag"),
+                        "fileCount": 0,
+                        "totalFailedChecks": 0,
+                    })
+                    entry["fileCount"] += 1
+                    entry["totalFailedChecks"] += f.get("failed_checks") or 0
+                per_file.append({
+                    "filename": fname, "ok": True,
+                    "compliant": d.get("compliant"), "flavour": d.get("flavour"),
+                    "failedRules": d.get("failed_rules"), "failedChecks": d.get("failed_checks"),
+                    "validationError": d.get("validation_error"),
+                    "failures": failures,
+                })
+            except Exception as exc:
+                per_file.append({"filename": fname, "ok": False, "error": str(exc)[:200]})
+            finally:
+                if tmp and os.path.exists(tmp):
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+            job.touch(progress=int((i + 1) / n * 100))
+
+        processed = [r for r in per_file if r.get("ok")]
+        compliant_n = sum(1 for r in processed if r.get("compliant"))
+        top_issues = sorted(clause_counts.values(), key=lambda c: -c["fileCount"])[:20]
+        rollup = {
+            "flavour": KNOWN_FLAVOURS.get(flavour, flavour),
+            "totalFiles": len(payload),
+            "processedFiles": len(processed),
+            "erroredFiles": len(payload) - len(processed),
+            "compliantFiles": compliant_n,
+            "nonCompliantFiles": len(processed) - compliant_n,
+            "compliancePct": round(100 * compliant_n / len(processed), 1) if processed else None,
+            "topIssues": top_issues,
+            "files": per_file,
+        }
+        return {"json": rollup}
+
+    job = _jobs.submit("audit", _work)
+    return JSONResponse(
+        {"id": job.id, "status": job.status, "count": len(payload),
+         "statusUrl": f"/jobs/{job.id}", "resultUrl": f"/jobs/{job.id}/result"},
+        status_code=202,
+    )
+
+
 @app.post("/quickfix", tags=["patch"], summary="Quick Fix All — apply every AI-driven auto-fix to an already-remediated PDF in one pass")
 def quickfix(file: UploadFile = File(...)) -> Response:
     """Runs all fixers in sequence: contrast, heading levels, table scope,
