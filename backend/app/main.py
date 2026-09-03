@@ -105,7 +105,19 @@ def validate(file: UploadFile = File(...), flavour: str = Form(DEFAULT_FLAVOUR))
         result = safe_validate_pdf(path, flavour=flavour)
     finally:
         if os.path.exists(path): os.unlink(path)
-    return JSONResponse(result.to_dict())
+    payload = result.to_dict()
+    # Plain-English titles/hints + WCAG citations for audit deliverables — an
+    # audit company reading raw ISO 14289-1 clause codes off /validate (the
+    # non-modifying endpoint) shouldn't have to hand-translate them. Only the
+    # PDF/UA flavours have clause explanations; PDF/A clauses are a different
+    # spec and would otherwise get a misleading "PDF/UA" fallback label.
+    if flavour in ("ua1", "ua2") and payload.get("failures"):
+        try:
+            from .verapdf_explain import enrich_failures
+            payload["failures"] = enrich_failures(payload["failures"])
+        except Exception:
+            pass
+    return JSONResponse(payload)
 
 @app.post("/autotag", tags=["core"], summary="Analyse a PDF and return a structured accessibility manifest (JSON)")
 def autotag(file: UploadFile = File(...), detect_headers: bool = Form(True)) -> JSONResponse:
