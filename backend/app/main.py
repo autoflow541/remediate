@@ -200,7 +200,10 @@ def submit_autotag_job(file: UploadFile = File(...), detect_headers: bool = Form
         status_code=202,
     )
 
-def _remediate_impl(file: UploadFile, manifest: UploadFile, flavour: str = DEFAULT_FLAVOUR) -> Response:
+def _remediate_impl(file: UploadFile, manifest: UploadFile, flavour: str = DEFAULT_FLAVOUR, cost_tracker=None) -> Response:
+    # cost_tracker (ai_config.CostTracker), when passed by a batch caller, is
+    # shared across every file in the batch so the AI vision pass stops once
+    # the batch collectively hits AI_USD_BUDGET -- see run_visual_fix.
     try:
         manifest_obj = json.loads(manifest.file.read())
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -425,7 +428,7 @@ def _remediate_impl(file: UploadFile, manifest: UploadFile, flavour: str = DEFAU
         visual_review: dict = {}
         try:
             from .ai_visual_fix import run_visual_fix
-            visual_review = run_visual_fix(out_path)
+            visual_review = run_visual_fix(out_path, cost_tracker=cost_tracker)
             if visual_review.get("applied"):
                 log.info("REMEDIATE visual-fix applied %d fix(es)", len(visual_review["applied"]))
                 try:
@@ -626,6 +629,11 @@ def submit_batch_job(files: list[UploadFile] = File(...), flavour: str = Form(DE
 
     def _work(job):
         import io, zipfile
+        from .ai_config import CostTracker
+        # ONE tracker shared across every file in the batch (STRATEGY.md Tier
+        # 0: "a batch can never blow the bill") -- without this, each file got
+        # its own fresh, unenforced budget and AI_USD_BUDGET did nothing.
+        cost_tracker = CostTracker()
         results = []
         zbuf = io.BytesIO()
         n = max(1, len(payload))
@@ -640,7 +648,7 @@ def submit_batch_job(files: list[UploadFile] = File(...), flavour: str = Form(DE
                     manifest.pop("_questions", None)
                     up_pdf = UploadFile(io.BytesIO(data), filename=fname)
                     up_man = UploadFile(io.BytesIO(json.dumps(manifest).encode()), filename="manifest.json")
-                    resp = _remediate_impl(up_pdf, up_man, flavour)
+                    resp = _remediate_impl(up_pdf, up_man, flavour, cost_tracker=cost_tracker)
                     meta = {}
                     try:
                         meta = json.loads(resp.headers.get("X-Conformance", "{}"))
@@ -665,7 +673,8 @@ def submit_batch_job(files: list[UploadFile] = File(...), flavour: str = Form(DE
             fh.write(zbuf.getvalue())
         ok = sum(1 for r in results if r.get("ok"))
         return {"path": out, "filename": "remediated-batch.zip", "mediaType": "application/zip",
-                "total": len(payload), "succeeded": ok, "failed": len(payload) - ok, "results": results}
+                "total": len(payload), "succeeded": ok, "failed": len(payload) - ok, "results": results,
+                "aiCost": cost_tracker.summary()}
 
     job = _jobs.submit("batch", _work)
     return JSONResponse(
