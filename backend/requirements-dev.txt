@@ -3,3 +3,4 @@
 #   pytest            # from the backend/ directory
 -r requirements.txt
 pytest>=8.0
+httpx>=0.27          # required by fastapi.testclient.TestClient (test_jobs.py)

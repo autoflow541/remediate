@@ -139,11 +139,12 @@ def job_result(job_id: str):
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job id.")
-    if job.status == "error":
-        raise HTTPException(status_code=500, detail=job.error or "Job failed.")
-    if job.status != "done":
-        raise HTTPException(status_code=409, detail=f"Job not finished (status: {job.status}).")
-    res = job.result or {}
+    snap = job.snapshot()  # one atomic read — status/result can never be torn
+    if snap["status"] == "error":
+        raise HTTPException(status_code=500, detail=snap["error"] or "Job failed.")
+    if snap["status"] != "done":
+        raise HTTPException(status_code=409, detail=f"Job not finished (status: {snap['status']}).")
+    res = snap["result"] or {}
     if res.get("json") is not None:
         return JSONResponse(res["json"])
     path = res.get("path")
@@ -157,13 +158,15 @@ def job_report(job_id: str) -> Response:
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job id.")
-    if job.status != "done":
-        raise HTTPException(status_code=409, detail=f"Job not finished (status: {job.status}).")
-    data = (job.result or {}).get("reportData")
+    snap = job.snapshot()  # one atomic read — status/result can never be torn
+    if snap["status"] != "done":
+        raise HTTPException(status_code=409, detail=f"Job not finished (status: {snap['status']}).")
+    result = snap["result"] or {}
+    data = result.get("reportData")
     if not data:
         raise HTTPException(status_code=404, detail="No conformance report for this job.")
     from .audit_report import generate_report
-    html = generate_report((job.result or {}).get("filename", "document.pdf"), data)
+    html = generate_report(result.get("filename", "document.pdf"), data)
     return Response(content=html.encode("utf-8"), media_type="text/html; charset=utf-8")
 
 @app.post("/jobs/autotag", status_code=202, tags=["batch"], summary="Submit an async autotag job")

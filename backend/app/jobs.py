@@ -37,28 +37,48 @@ class Job:
     progress: int = 0       # 0-100, worker may update
     result: Any = None      # e.g. {"path": <pdf>, "meta": {...}} or {"json": {...}}
     error: str | None = None
+    # Guards this job's OWN fields (separate from the registry's dict lock).
+    # touch() sets status/result/progress as multiple attribute writes; without
+    # this, a poller could observe status=="done" before result has landed
+    # (touch's kwargs are applied status-first), getting a spurious "no result"
+    # on a job that actually succeeded. snapshot() takes the same lock so a
+    # reader always sees either the pre- or post-update state, never a mix.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def touch(self, **kw) -> None:
-        for k, v in kw.items():
-            setattr(self, k, v)
-        self.updated_at = time.time()
+        with self._lock:
+            for k, v in kw.items():
+                setattr(self, k, v)
+            self.updated_at = time.time()
+
+    def snapshot(self) -> dict:
+        """Atomically read every field together (status/result/error/progress),
+        so callers never act on a half-applied update."""
+        with self._lock:
+            return {
+                "id": self.id, "kind": self.kind, "status": self.status,
+                "progress": self.progress, "created_at": self.created_at,
+                "updated_at": self.updated_at, "result": self.result,
+                "error": self.error,
+            }
 
     def public(self) -> dict:
         """JSON-safe status view (never leaks the on-disk result path)."""
+        s = self.snapshot()
         d = {
-            "id": self.id,
-            "kind": self.kind,
-            "status": self.status,
-            "progress": self.progress,
-            "createdAt": self.created_at,
-            "updatedAt": self.updated_at,
+            "id": s["id"],
+            "kind": s["kind"],
+            "status": s["status"],
+            "progress": s["progress"],
+            "createdAt": s["created_at"],
+            "updatedAt": s["updated_at"],
         }
-        if self.status == "error":
-            d["error"] = self.error
-        if self.status == "done" and isinstance(self.result, dict):
-            d["result"] = {k: v for k, v in self.result.items() if k not in ("path", "json", "reportData")}
-            d["hasFile"] = bool(self.result.get("path"))
-            d["hasJson"] = self.result.get("json") is not None
+        if s["status"] == "error":
+            d["error"] = s["error"]
+        if s["status"] == "done" and isinstance(s["result"], dict):
+            d["result"] = {k: v for k, v in s["result"].items() if k not in ("path", "json", "reportData")}
+            d["hasFile"] = bool(s["result"].get("path"))
+            d["hasJson"] = s["result"].get("json") is not None
         return d
 
 
