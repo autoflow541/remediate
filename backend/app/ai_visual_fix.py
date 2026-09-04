@@ -407,14 +407,24 @@ def _apply_fixes(pdf_path: str, fixes: list[dict]) -> tuple[list[dict], list[dic
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def run_visual_fix(pdf_path: str, max_pages: int = 4) -> dict:
+def run_visual_fix(pdf_path: str, max_pages: int = 4, cost_tracker=None) -> dict:
     """Review the remediated PDF visually and auto-apply the safe fixes.
 
     Modifies pdf_path in place (with a validate-guard). Returns a report:
     {available, model, pagesReviewed, summary, applied[], skipped[], remaining[]}.
+
+    ``cost_tracker`` (an ai_config.CostTracker) is optional and lets a caller
+    share one hard USD budget across many calls -- e.g. /jobs/batch passes the
+    SAME tracker into every file's remediation, so the batch stops making paid
+    AI calls once it collectively hits AI_USD_BUDGET (STRATEGY.md Tier 0: "a
+    batch can never blow the bill"), rather than each file getting its own
+    fresh, unenforced budget. Deterministic remediation still runs for every
+    file either way -- only the AI vision pass is skipped once over budget.
     """
     if os.environ.get("AI_VISUAL_FIX", "on").lower() in ("off", "0", "false"):
         return {"available": False, "reason": "disabled via AI_VISUAL_FIX env"}
+    if cost_tracker is not None and cost_tracker.over_budget():
+        return {"available": False, "reason": "AI budget exceeded for this job/batch."}
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         return {"available": False, "reason": "ANTHROPIC_API_KEY not configured on the engine."}
@@ -512,6 +522,8 @@ def run_visual_fix(pdf_path: str, max_pages: int = 4) -> dict:
     _usage = getattr(response, "usage", None)
     _in = int(getattr(_usage, "input_tokens", 0) or 0)
     _out = int(getattr(_usage, "output_tokens", 0) or 0)
+    if cost_tracker is not None:
+        cost_tracker.add(_MODEL, _in, _out)
     return {
         "available": True,
         "model": _MODEL,
