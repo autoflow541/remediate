@@ -8,7 +8,11 @@
 
 pdf.auto-flow.co {
     # GET API routes -> FastAPI engine
-    @apiGet path /health /health/* /docs /docs/* /redoc /redoc/* /openapi.json
+    # /jobs/* covers the async job queue's poll/download endpoints (GET
+    # /jobs/{id}, /jobs/{id}/result, /jobs/{id}/report) -- these are GET, so
+    # the "non-GET = API" rule below never covers them; without this they
+    # silently fall through to the SPA and return index.html instead of JSON.
+    @apiGet path /health /health/* /docs /docs/* /redoc /redoc/* /openapi.json /jobs/*
     handle @apiGet {
         reverse_proxy localhost:8000
     }
