@@ -21,6 +21,13 @@ class ClauseExplanation:
     title: str
     explanation: str
     hint: str
+    # The corresponding WCAG 2.x Success Criterion, e.g. "1.1.1 Non-text
+    # Content (A)" — for audit deliverables that must cite WCAG, not just the
+    # ISO 14289-1 clause number. None for clauses that are PDF/UA-specific
+    # technical/metadata requirements with no direct WCAG equivalent (e.g. the
+    # pdfuaid conformance flag) — left unmapped rather than force-fit, since a
+    # wrong citation on a compliance document is worse than an honest gap.
+    wcag: str | None = None
 
 
 # ISO 14289-1 (PDF/UA-1) clauses that veraPDF checks.
@@ -32,6 +39,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "The PDF's catalog doesn't declare it as a Tagged PDF, so assistive "
         "technology has no structure tree to navigate.",
         "Set the /MarkInfo /Marked flag to true during document creation.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     "6.2-2": ClauseExplanation(
         "Real content not tagged",
@@ -39,12 +47,14 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "the structure tree and will be invisible to screen readers.",
         "Ensure every content item is referenced by a structure element or "
         "explicitly marked as an Artifact.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     "6.2-3": ClauseExplanation(
         "Content marked as Artifact appears in structure tree",
         "An element is tagged as both a structural element and an Artifact, "
         "which is contradictory.",
         "Remove the content from the structure tree or remove the Artifact mark.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 6.3 Document outline (bookmarks) ────────────────────────────────────
     "6.3-1": ClauseExplanation(
@@ -52,6 +62,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "The PDF has more than 20 pages but no bookmark (outline) tree, making "
         "navigation difficult for keyboard and screen-reader users.",
         "Add bookmarks for each major section heading.",
+        wcag='2.4.5 Multiple Ways (AA)',
     ),
     # ── 6.4 Semantic elements ────────────────────────────────────────────────
     "6.4-1": ClauseExplanation(
@@ -60,18 +71,21 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "PDF/UA tag, so assistive technology can't interpret its meaning.",
         "Add a /RoleMap entry that maps the custom tag to a standard PDF tag "
         "(e.g., <CustomH1> → <H1>).",
+        wcag='4.1.2 Name, Role, Value (A)',
     ),
     "6.4-2": ClauseExplanation(
         "Incorrect nesting of heading levels",
         "Heading levels are skipped or out of order (e.g., <H1> followed directly "
         "by <H3>), breaking the document outline for screen reader users.",
         "Ensure headings follow a strict hierarchy: H1 → H2 → H3, with no gaps.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     "6.4-3": ClauseExplanation(
         "Table missing header cells",
         "A data table is present but has no <TH> (table header) cells, so "
         "screen readers cannot associate data cells with their headers.",
         "Mark column and row headers as <TH> elements with /Scope attributes.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 6.5 Headings ─────────────────────────────────────────────────────────
     "6.5-1": ClauseExplanation(
@@ -80,6 +94,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "tree, making the logical outline ambiguous.",
         "Place each heading in a Section or Document container, not floating at "
         "the top level.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 6.7 Lists ────────────────────────────────────────────────────────────
     "6.7-1": ClauseExplanation(
@@ -87,6 +102,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "A list (<L>) contains children that are not <LI> items, or an <LI> "
         "contains unexpected direct children.",
         "Wrap list content in <LI> → <Lbl> + <LBody> pairs.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 6.8 Math ─────────────────────────────────────────────────────────────
     "6.8-1": ClauseExplanation(
@@ -94,6 +110,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "A formula figure has no alt-text or associated MathML, so screen "
         "readers can only announce 'image'.",
         "Add an /Alt attribute describing the formula, or embed MathML.",
+        wcag='1.1.1 Non-text Content (A)',
     ),
     # ── 7.1 General (viewable/printable) ────────────────────────────────────
     "7.1-1": ClauseExplanation(
@@ -101,24 +118,28 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "The /Lang entry is missing from the document catalog, so screen "
         "readers cannot select the correct voice or pronunciation rules.",
         "Set the document language (e.g., 'en-US') in the PDF catalog /Lang key.",
+        wcag='3.1.1 Language of Page (A)',
     ),
     "7.1-2": ClauseExplanation(
         "Title missing from document metadata",
         "The PDF's metadata has no /Title entry; screen readers announce the "
         "file name instead of a meaningful title.",
         "Add a descriptive title to the document's XMP or DocInfo metadata.",
+        wcag='2.4.2 Page Titled (A)',
     ),
     "7.1-3": ClauseExplanation(
         "DisplayDocTitle flag not set",
         "Even if /Title is present, the viewer is not instructed to display it "
         "in the title bar instead of the file name.",
         "Set /ViewerPreferences /DisplayDocTitle to true.",
+        wcag='2.4.2 Page Titled (A)',
     ),
     "7.1-4": ClauseExplanation(
         "PDF/UA identifier missing",
         "The PDF's XMP metadata is missing the pdfuaid:part = '1' declaration "
         "that signals conformance to PDF/UA-1.",
         "Add <pdfuaid:part>1</pdfuaid:part> to the document's XMP metadata stream.",
+        wcag=None,
     ),
     "7.1-5": ClauseExplanation(
         "Page size or rotation not declared",
@@ -126,12 +147,14 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "confuse AT about the page orientation.",
         "Ensure all pages have consistent MediaBox dimensions and explicit "
         "/Rotate entries where needed.",
+        wcag=None,
     ),
     "7.1-6": ClauseExplanation(
         "Encryption prevents AT access",
         "The PDF is encrypted in a way that blocks text extraction, which "
         "prevents screen readers from reading the content.",
         "Use encryption settings that permit content copying / text extraction.",
+        wcag=None,
     ),
     # ── 7.2 Text ─────────────────────────────────────────────────────────────
     "7.2-1": ClauseExplanation(
@@ -140,12 +163,14 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "so screen readers can't select the right pronunciation engine.",
         "Set the document /Lang and, for foreign-language passages, set /Lang "
         "on the individual structure element.",
+        wcag='3.1.2 Language of Parts (AA)',
     ),
     "7.2-2": ClauseExplanation(
         "Character encoding cannot be mapped to Unicode",
         "Some characters in the PDF cannot be mapped to Unicode code points, "
         "so screen readers will misread or skip them.",
         "Ensure all fonts embed a /ToUnicode CMap, or use standard encodings.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 7.3 Graphics ─────────────────────────────────────────────────────────
     "7.3-1": ClauseExplanation(
@@ -154,12 +179,14 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "describe it to blind users.",
         "Add an /Alt attribute with a concise, meaningful description to every "
         "non-decorative image.",
+        wcag='1.1.1 Non-text Content (A)',
     ),
     "7.3-2": ClauseExplanation(
         "Decorative graphic not marked as Artifact",
         "A purely decorative image is included in the structure tree instead "
         "of being marked as an Artifact, causing unnecessary AT announcements.",
         "Mark decorative images as Artifacts so screen readers skip them.",
+        wcag='1.1.1 Non-text Content (A)',
     ),
     # ── 7.4 Headings ─────────────────────────────────────────────────────────
     "7.4-1": ClauseExplanation(
@@ -167,6 +194,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "The PDF has heading tags that are not in a valid nesting sequence, "
         "making the document outline unreliable.",
         "Review all heading levels and ensure a strict H1 → H2 → H3 hierarchy.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 7.5 Tables ───────────────────────────────────────────────────────────
     "7.5-1": ClauseExplanation(
@@ -174,6 +202,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "A table has <TH> cells, but they lack /Scope or /Headers attributes, "
         "so screen readers can't announce which header belongs to which data cell.",
         "Add /Scope (Row, Column, or Both) to all <TH> cells.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     "7.5-2": ClauseExplanation(
         "Table cell spans rows or columns without scope",
@@ -181,6 +210,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "breaking data-cell-to-header associations.",
         "Add explicit /Headers attributes to merged cells identifying their "
         "corresponding <TH> IDs.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 7.6 Lists ────────────────────────────────────────────────────────────
     "7.6-1": ClauseExplanation(
@@ -188,6 +218,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "List items (<LI>) are not properly nested inside a list container (<L>), "
         "or list items are missing required children.",
         "Restructure the list as <L> → <LI> → (<Lbl> and/or <LBody>).",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 7.18 Interactive forms ───────────────────────────────────────────────
     "7.18.1-1": ClauseExplanation(
@@ -195,6 +226,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "An interactive form field has no /TU (tooltip / accessible name), so "
         "screen readers can only announce the field's internal ID.",
         "Add a /TU tooltip attribute with a descriptive label to every form field.",
+        wcag='4.1.2 Name, Role, Value (A)',
     ),
     "7.18.2-1": ClauseExplanation(
         "Form field not in structure tree",
@@ -202,6 +234,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "from the structure tree, hiding it from AT.",
         "Include each form field as a Widget annotation linked from a <Form> "
         "structure element.",
+        wcag='4.1.2 Name, Role, Value (A)',
     ),
     # ── 7.19 Notes & references ──────────────────────────────────────────────
     "7.19-1": ClauseExplanation(
@@ -210,6 +243,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "<Note> structure element, so its relationship to the main text is lost.",
         "Tag footnotes as <Note> elements with an /ID that references the "
         "in-text citation.",
+        wcag='1.3.1 Info and Relationships (A)',
     ),
     # ── 7.21 Embedded files ──────────────────────────────────────────────────
     "7.21-1": ClauseExplanation(
@@ -217,6 +251,7 @@ _EXPLANATIONS: dict[str, ClauseExplanation] = {
         "A file attachment has no /Desc (description) entry, so users can't "
         "tell what the attachment contains before opening it.",
         "Add a /Desc attribute to the embedded file specification dictionary.",
+        wcag=None,
     ),
 }
 
@@ -262,5 +297,6 @@ def enrich_failures(failures: list[dict]) -> list[dict]:
             "plain_title": exp.title,
             "plain_explanation": exp.explanation,
             "plain_hint": exp.hint,
+            "plain_wcag": exp.wcag,
         })
     return enriched
